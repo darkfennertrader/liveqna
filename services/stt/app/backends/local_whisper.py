@@ -15,7 +15,6 @@ from faster_whisper import WhisperModel
 
 from .base import TranscriberBackend, TranscriptEvent
 from ..vad import SpeechSegmenter
-from ..speaker_id_client import SpeakerIdClient
 
 logger = logging.getLogger("stt.local_whisper")
 
@@ -39,8 +38,6 @@ class LocalWhisperBackend(TranscriberBackend):
         silence_duration_ms: int = 700,
         min_speech_ms: int = 250,
         max_segment_ms: int = 12000,
-        speaker_id_ws_url: str | None = None,
-        speaker_min_utterance_ms: int = 500,
     ) -> None:
         self.language = language
         self._sample_rate = sample_rate
@@ -63,18 +60,6 @@ class LocalWhisperBackend(TranscriberBackend):
         # (they are infrequent and must never be dropped).
         self._pending_partial: bytes | None = None
         self._partial_inflight = False
-
-        # speaker-id lookups now run exactly once per segment, on its
-        # *final* audio (full utterance), not on an early partial -- see
-        # conversation history: querying from the first ~500ms partial
-        # produced noisy embeddings that caused both false splits (same
-        # speaker mismatched against their own later utterances) and
-        # false merges (coincidentally close to a different speaker).
-        # The final decode awaits this result (finals are infrequent, so
-        # the extra latency is acceptable) rather than caching a stale
-        # early guess. Partials simply carry no speaker_id/is_overlap.
-        self._speaker_client = SpeakerIdClient(speaker_id_ws_url) if speaker_id_ws_url else None
-        self._speaker_min_bytes = int(sample_rate * (speaker_min_utterance_ms / 1000.0)) * 2
 
         logger.info(
             "loading faster-whisper model=%s device=%s compute_type=%s",
@@ -101,11 +86,6 @@ class LocalWhisperBackend(TranscriberBackend):
                     self._partial_inflight = True
                     asyncio.create_task(self._drain_partial())
 
-    async def _get_speaker_info(self, segment_id: int, audio_bytes: bytes) -> dict:
-        if self._speaker_client is None or len(audio_bytes) < self._speaker_min_bytes:
-            return {}
-        return await self._speaker_client.identify(segment_id, audio_bytes)
-
     async def _drain_partial(self) -> None:
         try:
             while self._pending_partial is not None:
@@ -124,17 +104,7 @@ class LocalWhisperBackend(TranscriberBackend):
                 return
             audio = _pcm16_bytes_to_float32(audio_bytes)
             try:
-                if is_final:
-                    # Run the Whisper decode and the speaker-id lookup
-                    # concurrently -- both read the same final audio, and
-                    # there's no dependency between them.
-                    text, speaker_info = await asyncio.gather(
-                        asyncio.to_thread(self._transcribe_sync, audio),
-                        self._get_speaker_info(segment_id, audio_bytes),
-                    )
-                else:
-                    text = await asyncio.to_thread(self._transcribe_sync, audio)
-                    speaker_info = {}
+                text = await asyncio.to_thread(self._transcribe_sync, audio)
             except Exception:
                 logger.exception("transcription failed")
                 return
@@ -145,9 +115,8 @@ class LocalWhisperBackend(TranscriberBackend):
                 type=event_type,
                 text=text,
                 segment_id=segment_id,
-                speaker_id=speaker_info.get("speaker_id"),
-                is_overlap=bool(speaker_info.get("is_overlap", False)),
             ))
+
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         segments, _info = self._model.transcribe(
@@ -166,11 +135,10 @@ class LocalWhisperBackend(TranscriberBackend):
 
     async def close(self) -> None:
         self._closed = True
-        if self._speaker_client is not None:
-            await self._speaker_client.close()
         # Drop the model reference and release CUDA memory held by
         # ctranslate2 so switching to an online backend frees VRAM.
         del self._model
         import gc
 
         gc.collect()
+

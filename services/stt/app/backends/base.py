@@ -21,8 +21,6 @@ class TranscriptEvent:
     text: str
     ts: float = field(default_factory=time.time)
     segment_id: int | None = None
-    speaker_id: str | None = None
-    is_overlap: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -30,8 +28,6 @@ class TranscriptEvent:
             "text": self.text,
             "ts": self.ts,
             "segment_id": self.segment_id,
-            "speaker_id": self.speaker_id,
-            "is_overlap": self.is_overlap,
         }
 
 

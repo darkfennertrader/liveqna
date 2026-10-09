@@ -43,13 +43,14 @@
     flex: 1; overflow-y: auto; background: #11131a; border: 1px solid var(--border);
     border-radius: 8px; padding: 16px; font-size: 16px; line-height: 1.7;
   }
-  #transcript .final { color: var(--final); }
-  #transcript .partial { color: var(--partial); font-style: italic; }
+  .utterance-text { margin-bottom: 10px; }
+  .utterance-text.final { color: var(--final); }
+  .utterance-text.partial { color: var(--partial); font-style: italic; }
   #toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   #toolbar h1 { margin: 0; }
   #conn { font-size: 12px; }
-  #conn.connected::before { content: "● "; color: #5cd68a; }
-  #conn.disconnected::before { content: "● "; color: #ff8577; }
+  #conn.connected::before { content: "\25cf "; color: #5cd68a; }
+  #conn.disconnected::before { content: "\25cf "; color: #ff8577; }
   #level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   #level-dot {
     width: 10px; height: 10px; border-radius: 50%; background: #3a3f4e;
@@ -67,41 +68,9 @@
     transition: width .08s linear;
   }
   #level-label { font-size: 11px; color: var(--muted); width: 70px; text-align: right; }
-
-  .utterance { margin-bottom: 14px; cursor: pointer; }
-  .utterance .speaker-name {
-    font-size: 11px; font-weight: 600; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px;
-  }
-  .utterance .speaker-text.final { color: var(--final); }
-  .utterance .speaker-text.partial { color: var(--partial); font-style: italic; }
-  .utterance .speaker-text.overlap { color: #ff5c5c !important; }
-
-  .enrolled-chip {
-    display: inline-flex; align-items: center; gap: 6px; background: #11131a;
-    border: 1px solid var(--border); border-radius: 14px; padding: 4px 10px;
-    margin: 0 6px 6px 0; font-size: 12px;
-  }
-  .enrolled-chip button {
-    width: auto; padding: 0 4px; margin: 0; border: none; background: none;
-    color: #ff8577; font-size: 13px; line-height: 1;
-  }
-
-  #ctx-menu {
-    position: absolute; display: none; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 6px; padding: 4px;
-    box-shadow: 0 4px 16px rgba(0,0,0,.4); z-index: 100; min-width: 180px;
-  }
-  #ctx-menu button {
-    display: block; width: 100%; text-align: left; margin: 0; padding: 7px 10px;
-    background: none; border: none; border-radius: 4px; font-size: 13px;
-  }
-  #ctx-menu button:hover { background: #232838; }
-  #ctx-menu hr { border-color: var(--border); margin: 4px 0; }
 </style>
 </head>
 <body>
-  <div id="ctx-menu"></div>
   <div id="sidebar">
     <h1>liveqna &mdash; configuration</h1>
 
@@ -162,53 +131,6 @@
     <input id="language" type="text" value="en" />
 
     <button id="apply-model" class="primary">Apply model config</button>
-
-    <h2>Speaker tracking</h2>
-    <label for="embedding-backend">Embedding model</label>
-    <select id="embedding-backend">
-      <option value="ecapa" selected>ECAPA-TDNN (recommended)</option>
-      <option value="resemblyzer">Resemblyzer (lighter, less accurate)</option>
-    </select>
-    <label for="speaker-threshold">Similarity threshold (0-1)</label>
-    <input id="speaker-threshold" type="number" min="0" max="1" step="0.01" value="0.40" />
-    <p style="font-size:10px; color:var(--muted); margin:2px 0 8px;">
-      Default differs per model: ECAPA-TDNN ~0.40, Resemblyzer ~0.78 --
-      switching models resets this to that model's default.
-    </p>
-    <label>
-      <input id="overlap-enabled" type="checkbox" checked style="width:auto; display:inline; margin-right:6px;" />
-      <span style="font-size:12px; color:var(--muted);">Overlap detection enabled</span>
-    </label>
-    <button id="apply-speaker" class="primary">Apply speaker config</button>
-    <p style="font-size:11px; color:var(--muted); margin-top:10px; line-height:1.5;">
-      Click an utterance to track that speaker (assigns a color). Click a
-      tracked utterance to untrack it. Right-click any utterance for more
-      options (rename, merge into a tracked speaker).
-    </p>
-
-    <h2>Enrolled speakers</h2>
-    <div id="enrolled-list" style="font-size:13px; margin-bottom:10px;"></div>
-
-    <label for="enroll-file">Video file</label>
-    <input id="enroll-file" type="file" accept="video/*,audio/*" />
-    <div id="enroll-upload-status" style="font-size:11px; color:var(--muted); margin-top:4px;"></div>
-
-    <div id="enroll-fields" style="display:none; margin-top:8px;">
-      <label for="enroll-name">Speaker name</label>
-      <input id="enroll-name" type="text" placeholder="e.g. Alice" />
-      <div class="row">
-        <div>
-          <label for="enroll-start">Start (min.sec, e.g. 4.10 = 4m10s)</label>
-          <input id="enroll-start" type="text" placeholder="0.00" value="0.00" />
-        </div>
-        <div>
-          <label for="enroll-end">End (min.sec, e.g. 6.10 = 6m10s)</label>
-          <input id="enroll-end" type="text" placeholder="0.08" value="0.08" />
-        </div>
-      </div>
-      <button id="enroll-add-btn" class="primary">Add this speaker</button>
-      <button id="enroll-done-btn">Done / discard upload</button>
-    </div>
 
     <div id="status"></div>
   </div>

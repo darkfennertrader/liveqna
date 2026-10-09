@@ -9,12 +9,6 @@ from __future__ import annotations
 import os
 
 
-def _bool(v: str | None, default: bool = False) -> bool:
-    if v is None:
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
-
-
 def initial_config() -> dict:
     return {
         "capture": {
@@ -37,11 +31,6 @@ def initial_config() -> dict:
             "model": "",
             "chunk_ms": int(os.environ.get("OPENAI_CHUNK_MS", "4000")),
         },
-        "speaker": {
-            "embedding_backend": os.environ.get("EMBEDDING_BACKEND", "ecapa"),
-            "similarity_threshold": float(os.environ.get("SPEAKER_SIMILARITY_THRESHOLD", "0.40")),
-            "overlap_detection_enabled": _bool(os.environ.get("OVERLAP_DETECTION_ENABLED"), True),
-        },
     }
 
 
@@ -57,6 +46,3 @@ class ConfigStore:
         self.state["model"].update({k: v for k, v in patch.items() if v is not None})
         return self.state["model"]
 
-    def update_speaker(self, patch: dict) -> dict:
-        self.state["speaker"].update({k: v for k, v in patch.items() if v is not None})
-        return self.state["speaker"]

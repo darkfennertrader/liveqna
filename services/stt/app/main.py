@@ -72,9 +72,8 @@ def _build_backend(cfg: dict) -> TranscriberBackend:
             silence_duration_ms=int(cfg.get("silence_duration_ms", 700)),
             min_speech_ms=int(cfg.get("min_speech_ms", 250)),
             max_segment_ms=int(cfg.get("max_segment_ms", 12000)),
-            speaker_id_ws_url=os.environ.get("SPEAKER_ID_WS_URL") or None,
-            speaker_min_utterance_ms=int(cfg.get("speaker_min_utterance_ms", 500)),
         )
+
     if backend_name == "openai":
         return OpenAIBackend(
             api_key=cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", ""),
@@ -104,7 +103,6 @@ class ConfigureRequest(BaseModel):
     silence_duration_ms: int | None = None
     min_speech_ms: int | None = None
     max_segment_ms: int | None = None
-    speaker_min_utterance_ms: int | None = None
     api_key: str | None = None
     model: str | None = None
     chunk_ms: int | None = None
@@ -122,8 +120,8 @@ def _default_config() -> dict:
         "silence_duration_ms": int(os.environ.get("SILENCE_DURATION_MS", "700")),
         "min_speech_ms": int(os.environ.get("MIN_SPEECH_MS", "250")),
         "max_segment_ms": int(os.environ.get("MAX_SEGMENT_MS", "12000")),
-        "speaker_min_utterance_ms": int(os.environ.get("SPEAKER_MIN_UTTERANCE_MS", "500")),
     }
+
 
 
 @app.get("/health")

@@ -5,27 +5,23 @@ the capture/stt services.
 - WS /ws/client: browser control channel (select_source, update_capture_config,
   update_model_config, start, stop, refresh_sources) + relays live transcript
   events pushed from stt's /ws/transcript.
-- REST endpoints for speaker enrollment (upload a video, extract named
-  clips from it, forward to speaker-id, list/remove enrolled speakers).
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
 
 import websockets
-from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from . import proxy
 from .config_store import ConfigStore
-from .enrollment_uploads import EnrollmentUploadManager, new_upload_id
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ui.main")
@@ -55,7 +51,6 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 store = ConfigStore()
-uploads = EnrollmentUploadManager()
 
 STT_WS_URL = os.environ.get("STT_WS_URL", "ws://stt:8082")
 
@@ -129,7 +124,6 @@ async def _startup() -> None:
     global _transcript_relay_task, _level_relay_task
     _transcript_relay_task = asyncio.create_task(_relay_transcripts_forever())
     _level_relay_task = asyncio.create_task(_relay_levels_forever())
-    uploads.start_background_cleanup()
 
 
 @app.websocket("/ws/client")
@@ -185,10 +179,6 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
 
     elif action == "start":
         try:
-            await proxy.reset_speaker_id()
-        except Exception:
-            logger.warning("speaker-id reset failed (continuing anyway)", exc_info=True)
-        try:
             result = await proxy.start_capture()
             await ws.send_json({"kind": "capture_started", "result": result})
         except Exception as exc:
@@ -209,92 +199,3 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         except Exception as exc:
             await ws.send_json({"kind": "error", "message": str(exc)})
 
-    elif action == "update_speaker_config":
-        patch = store.update_speaker(msg.get("config", {}))
-        try:
-            await proxy.configure_speaker_id(patch)
-            await ws.send_json({"kind": "speaker_configured", "config": patch})
-        except Exception as exc:
-            await ws.send_json({"kind": "error", "message": f"speaker configure failed: {exc}"})
-
-    elif action == "merge_speaker":
-        source_id = msg.get("source_id")
-        target_id = msg.get("target_id")
-        if not source_id or not target_id:
-            await ws.send_json({"kind": "error", "message": "merge_speaker requires source_id and target_id"})
-            return
-        try:
-            result = await proxy.merge_speaker(source_id, target_id)
-            await ws.send_json({"kind": "speaker_merged", "result": result})
-        except Exception as exc:
-            await ws.send_json({"kind": "error", "message": f"merge failed: {exc}"})
-
-
-# --- speaker enrollment (upload once, enroll multiple people) -----------
-
-class EnrollFromUploadRequest(BaseModel):
-    upload_id: str
-    name: str
-    start_sec: float
-    end_sec: float
-
-
-@app.post("/api/enrollment/upload")
-async def upload_enrollment_video(file: UploadFile):
-    upload_id = new_upload_id()
-    try:
-        await uploads.save_upload(upload_id, file)
-    except Exception as exc:
-        logger.exception("upload failed")
-        return JSONResponse({"error": str(exc)}, status_code=400)
-
-    duration = uploads.get_duration(upload_id)
-    if not duration:
-        uploads.discard(upload_id)
-        return JSONResponse({"error": "could not read video duration (unsupported or corrupt file?)"}, status_code=400)
-
-    return {"upload_id": upload_id, "duration_sec": duration}
-
-
-@app.post("/api/enrollment/enroll")
-async def enroll_from_upload(req: EnrollFromUploadRequest):
-    try:
-        pcm = await uploads.extract_pcm(req.upload_id, req.start_sec, req.end_sec)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except Exception as exc:
-        logger.exception("audio extraction failed")
-        return JSONResponse({"error": f"extraction failed: {exc}"}, status_code=400)
-
-    audio_b64 = base64.b64encode(pcm).decode("ascii")
-    result = await proxy.enroll_speaker(
-        req.name, audio_b64,
-        source_label=req.upload_id, start_sec=req.start_sec, end_sec=req.end_sec,
-    )
-    if "error" in result:
-        return JSONResponse(result, status_code=400)
-    return result
-
-
-@app.post("/api/enrollment/finish/{upload_id}")
-async def finish_enrollment_upload(upload_id: str):
-    uploads.discard(upload_id)
-    return {"status": "discarded"}
-
-
-@app.get("/api/enrollment/speakers")
-async def get_enrolled_speakers():
-    try:
-        speakers = await proxy.list_enrolled_speakers()
-    except Exception as exc:
-        return JSONResponse({"error": str(exc), "speakers": []}, status_code=400)
-    return {"speakers": speakers}
-
-
-@app.delete("/api/enrollment/speakers/{name}")
-async def remove_enrolled_speaker(name: str):
-    try:
-        result = await proxy.delete_enrolled_speaker(name)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return result

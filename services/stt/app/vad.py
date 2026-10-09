@@ -99,7 +99,7 @@ class SpeechSegmenter:
                         self._speech_frame_count = 0
                         self._silence_run = 0
                         # stay "in speech" -- no need to re-satisfy min_speech_ms,
-                        # but this is a fresh segment for speaker-id purposes.
+                        # but this is a fresh segment_id for the caller.
                         self._segment_id_counter += 1
                         self._current_segment_id = self._segment_id_counter
                     else:
