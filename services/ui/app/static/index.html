@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>liveqna</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #2a2e3a;
+    --text: #e6e8ef; --muted: #9aa0ad; --accent: #5b8def;
+    --final: #e6e8ef; --partial: #7d8396;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--text); display: flex; height: 100vh;
+  }
+  #sidebar {
+    width: 320px; min-width: 320px; background: var(--panel);
+    border-right: 1px solid var(--border); padding: 16px; overflow-y: auto;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; padding: 16px; }
+  h1 { font-size: 16px; margin: 0 0 16px 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--muted); margin: 20px 0 8px 0; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  select, input, button {
+    width: 100%; padding: 7px 8px; background: #11131a; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+  }
+  button { cursor: pointer; margin-top: 8px; transition: background .15s; }
+  button:hover { background: #1c2030; }
+  button.primary { background: var(--accent); color: #0a0a0a; border: none; font-weight: 600; }
+  button.primary:hover { background: #74a0f3; }
+  button.danger { border-color: #c0392b; color: #ff8577; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  #status { font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
+  #status .ok { color: #5cd68a; }
+  #status .bad { color: #ff8577; }
+  .field-group { display: none; }
+  .field-group.active { display: block; }
+  #transcript {
+    flex: 1; overflow-y: auto; background: #11131a; border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; font-size: 16px; line-height: 1.7;
+  }
+  #transcript .final { color: var(--final); }
+  #transcript .partial { color: var(--partial); font-style: italic; }
+  #toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  #toolbar h1 { margin: 0; }
+  #conn { font-size: 12px; }
+  #conn.connected::before { content: "● "; color: #5cd68a; }
+  #conn.disconnected::before { content: "● "; color: #ff8577; }
+  #level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  #level-dot {
+    width: 10px; height: 10px; border-radius: 50%; background: #3a3f4e;
+    transition: background .1s, box-shadow .1s;
+  }
+  #level-dot.live {
+    background: #5cd68a; box-shadow: 0 0 8px 2px rgba(92, 214, 138, 0.6);
+  }
+  #level-bar-track {
+    flex: 1; height: 8px; background: #11131a; border: 1px solid var(--border);
+    border-radius: 4px; overflow: hidden;
+  }
+  #level-bar-fill {
+    height: 100%; width: 0%; background: linear-gradient(90deg, #5cd68a, #e8c547, #e85d5d);
+    transition: width .08s linear;
+  }
+  #level-label { font-size: 11px; color: var(--muted); width: 70px; text-align: right; }
+
+  .utterance { margin-bottom: 14px; cursor: pointer; }
+  .utterance .speaker-name {
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px;
+  }
+  .utterance .speaker-text.final { color: var(--final); }
+  .utterance .speaker-text.partial { color: var(--partial); font-style: italic; }
+  .utterance .speaker-text.overlap { color: #ff5c5c !important; }
+
+  .enrolled-chip {
+    display: inline-flex; align-items: center; gap: 6px; background: #11131a;
+    border: 1px solid var(--border); border-radius: 14px; padding: 4px 10px;
+    margin: 0 6px 6px 0; font-size: 12px;
+  }
+  .enrolled-chip button {
+    width: auto; padding: 0 4px; margin: 0; border: none; background: none;
+    color: #ff8577; font-size: 13px; line-height: 1;
+  }
+
+  #ctx-menu {
+    position: absolute; display: none; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4); z-index: 100; min-width: 180px;
+  }
+  #ctx-menu button {
+    display: block; width: 100%; text-align: left; margin: 0; padding: 7px 10px;
+    background: none; border: none; border-radius: 4px; font-size: 13px;
+  }
+  #ctx-menu button:hover { background: #232838; }
+  #ctx-menu hr { border-color: var(--border); margin: 4px 0; }
+</style>
+</head>
+<body>
+  <div id="ctx-menu"></div>
+  <div id="sidebar">
+    <h1>liveqna &mdash; configuration</h1>
+
+
+    <h2>Source</h2>
+    <label for="source-select">Audio source</label>
+    <select id="source-select"></select>
+    <button id="refresh-sources">Refresh sources</button>
+
+    <div class="row">
+      <button id="start-btn" class="primary">Start</button>
+      <button id="stop-btn" class="danger">Stop</button>
+    </div>
+
+    <h2>Capture params</h2>
+    <label for="sample-rate">Sample rate (Hz)</label>
+    <input id="sample-rate" type="number" value="16000" step="1000" />
+    <label for="vad-aggr">VAD aggressiveness (0-3)</label>
+    <input id="vad-aggr" type="number" min="0" max="3" value="2" />
+    <label for="silence-ms">Silence timeout (ms)</label>
+    <input id="silence-ms" type="number" step="50" value="700" />
+    <label for="min-speech-ms">Min speech length (ms)</label>
+    <input id="min-speech-ms" type="number" step="50" value="250" />
+    <label for="max-segment-ms">Max segment length (ms)</label>
+    <input id="max-segment-ms" type="number" step="500" value="12000" />
+
+
+    <h2>Model</h2>
+    <label for="backend-select">Backend</label>
+    <select id="backend-select">
+      <option value="local">Local (GPU)</option>
+      <option value="openai">OpenAI</option>
+      <option value="deepgram">Deepgram</option>
+    </select>
+
+    <div id="group-local" class="field-group">
+      <label for="model-size">Model size</label>
+      <select id="model-size">
+        <option>tiny</option><option>base</option>
+        <option selected>small</option><option>medium</option>
+        <option>large-v3</option>
+      </select>
+      <label for="compute-type">Compute type</label>
+      <select id="compute-type">
+        <option selected>int8_float32</option>
+        <option>int8</option><option>float16</option><option>float32</option>
+      </select>
+    </div>
+
+    <div id="group-online" class="field-group">
+      <label for="api-key">API key</label>
+      <input id="api-key" type="password" placeholder="sk-..." />
+      <label for="model-name">Model name</label>
+      <input id="model-name" type="text" placeholder="(default)" />
+    </div>
+
+    <label for="language">Language</label>
+    <input id="language" type="text" value="en" />
+
+    <button id="apply-model" class="primary">Apply model config</button>
+
+    <h2>Speaker tracking</h2>
+    <label for="embedding-backend">Embedding model</label>
+    <select id="embedding-backend">
+      <option value="ecapa" selected>ECAPA-TDNN (recommended)</option>
+      <option value="resemblyzer">Resemblyzer (lighter, less accurate)</option>
+    </select>
+    <label for="speaker-threshold">Similarity threshold (0-1)</label>
+    <input id="speaker-threshold" type="number" min="0" max="1" step="0.01" value="0.40" />
+    <p style="font-size:10px; color:var(--muted); margin:2px 0 8px;">
+      Default differs per model: ECAPA-TDNN ~0.40, Resemblyzer ~0.78 --
+      switching models resets this to that model's default.
+    </p>
+    <label>
+      <input id="overlap-enabled" type="checkbox" checked style="width:auto; display:inline; margin-right:6px;" />
+      <span style="font-size:12px; color:var(--muted);">Overlap detection enabled</span>
+    </label>
+    <button id="apply-speaker" class="primary">Apply speaker config</button>
+    <p style="font-size:11px; color:var(--muted); margin-top:10px; line-height:1.5;">
+      Click an utterance to track that speaker (assigns a color). Click a
+      tracked utterance to untrack it. Right-click any utterance for more
+      options (rename, merge into a tracked speaker).
+    </p>
+
+    <h2>Enrolled speakers</h2>
+    <div id="enrolled-list" style="font-size:13px; margin-bottom:10px;"></div>
+
+    <label for="enroll-file">Video file</label>
+    <input id="enroll-file" type="file" accept="video/*,audio/*" />
+    <div id="enroll-upload-status" style="font-size:11px; color:var(--muted); margin-top:4px;"></div>
+
+    <div id="enroll-fields" style="display:none; margin-top:8px;">
+      <label for="enroll-name">Speaker name</label>
+      <input id="enroll-name" type="text" placeholder="e.g. Alice" />
+      <div class="row">
+        <div>
+          <label for="enroll-start">Start (min.sec, e.g. 4.10 = 4m10s)</label>
+          <input id="enroll-start" type="text" placeholder="0.00" value="0.00" />
+        </div>
+        <div>
+          <label for="enroll-end">End (min.sec, e.g. 6.10 = 6m10s)</label>
+          <input id="enroll-end" type="text" placeholder="0.08" value="0.08" />
+        </div>
+      </div>
+      <button id="enroll-add-btn" class="primary">Add this speaker</button>
+      <button id="enroll-done-btn">Done / discard upload</button>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <div id="main">
+    <div id="toolbar">
+      <h1>Live transcript</h1>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="clear-btn" style="margin-top:0; width:auto; padding:6px 14px;">Clear</button>
+        <span id="conn" class="disconnected">disconnected</span>
+      </div>
+    </div>
+    <div id="level-row">
+      <div id="level-dot"></div>
+      <div id="level-bar-track"><div id="level-bar-fill"></div></div>
+      <div id="level-label">no signal</div>
+    </div>
+    <div id="transcript"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

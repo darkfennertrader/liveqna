@@ -1,0 +1,10 @@
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+websockets==14.*
+pydantic==2.*
+numpy>=1.26,<3
+faster-whisper==1.2.*
+ctranslate2==4.8.*
+webrtcvad==2.0.*
+openai>=1.50
+setuptools<81

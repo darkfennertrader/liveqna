@@ -1,0 +1,72 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - ./.cache/qdrant:/qdrant/storage
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+  capture:
+    build: ./services/capture
+    env_file: .env
+    user: "1000:1000"
+    environment:
+      - XDG_RUNTIME_DIR=/run/user/1000
+      - STT_WS_URL=${STT_WS_URL:-ws://stt:8082}
+    volumes:
+      - /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+  stt:
+    build: ./services/stt
+    env_file: .env
+    volumes:
+      - ./.cache/huggingface:/cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+  speaker-id:
+    build: ./services/speaker-id
+    env_file: .env
+    volumes:
+      - ./.cache/huggingface:/cache/huggingface
+    depends_on:
+      - qdrant
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+  ui:
+    build: ./services/ui
+    env_file: .env
+    environment:
+      - CAPTURE_URL=${CAPTURE_URL:-http://capture:8081}
+      - STT_URL=${STT_URL:-http://stt:8082}
+      - STT_WS_URL=${STT_WS_URL:-ws://stt:8082}
+      - SPEAKER_ID_URL=${SPEAKER_ID_URL:-http://speaker-id:8083}
+      - SPEAKER_ID_WS_URL=${SPEAKER_ID_WS_URL:-ws://speaker-id:8083}
+    ports:
+      - "${UI_PORT:-8080}:8080"
+    depends_on:
+      - capture
+      - stt
+      - speaker-id
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+networks:
+  liveqna_net:
