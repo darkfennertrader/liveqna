@@ -33,6 +33,20 @@ services:
     networks: [liveqna_net]
     restart: unless-stopped
 
+  orchestrator:
+    build: ./services/orchestrator
+    env_file: .env
+    environment:
+      - ORCHESTRATOR_DATA_DIR=${ORCHESTRATOR_DATA_DIR:-/data}
+      - LANGGRAPH_STRICT_MSGPACK=true
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./.cache/orchestrator:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [liveqna_net]
+    restart: unless-stopped
+
   ui:
     build: ./services/ui
     env_file: .env
@@ -40,11 +54,13 @@ services:
       - CAPTURE_URL=${CAPTURE_URL:-http://capture:8081}
       - STT_URL=${STT_URL:-http://stt:8082}
       - STT_WS_URL=${STT_WS_URL:-ws://stt:8082}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://orchestrator:8083}
     ports:
       - "${UI_PORT:-8080}:8080"
     depends_on:
       - capture
       - stt
+      - orchestrator
     networks: [liveqna_net]
     restart: unless-stopped
 

@@ -4,86 +4,263 @@
 <meta charset="UTF-8" />
 <title>liveqna</title>
 <style>
-  :root {
-    --bg: #0f1117; --panel: #171a23; --border: #2a2e3a;
-    --text: #e6e8ef; --muted: #9aa0ad; --accent: #5b8def;
-    --final: #e6e8ef; --partial: #7d8396;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
-    background: var(--bg); color: var(--text); display: flex; height: 100vh;
-  }
-  #sidebar {
-    width: 320px; min-width: 320px; background: var(--panel);
-    border-right: 1px solid var(--border); padding: 16px; overflow-y: auto;
-  }
-  #main { flex: 1; display: flex; flex-direction: column; padding: 16px; }
-  h1 { font-size: 16px; margin: 0 0 16px 0; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
-       color: var(--muted); margin: 20px 0 8px 0; }
-  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
-  select, input, button {
-    width: 100%; padding: 7px 8px; background: #11131a; color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
-  }
-  button { cursor: pointer; margin-top: 8px; transition: background .15s; }
-  button:hover { background: #1c2030; }
-  button.primary { background: var(--accent); color: #0a0a0a; border: none; font-weight: 600; }
-  button.primary:hover { background: #74a0f3; }
-  button.danger { border-color: #c0392b; color: #ff8577; }
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; }
-  #status { font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
-  #status .ok { color: #5cd68a; }
-  #status .bad { color: #ff8577; }
-  .field-group { display: none; }
-  .field-group.active { display: block; }
-  #transcript {
-    flex: 1; overflow-y: auto; background: #11131a; border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px; font-size: 16px; line-height: 1.7;
-  }
-  .utterance-text { margin-bottom: 10px; }
-  .utterance-text.final { color: var(--final); }
-  .utterance-text.partial { color: var(--partial); font-style: italic; }
-  #toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-  #toolbar h1 { margin: 0; }
-  #conn { font-size: 12px; }
-  #conn.connected::before { content: "\25cf "; color: #5cd68a; }
-  #conn.disconnected::before { content: "\25cf "; color: #ff8577; }
-  #level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-  #level-dot {
-    width: 10px; height: 10px; border-radius: 50%; background: #3a3f4e;
-    transition: background .1s, box-shadow .1s;
-  }
-  #level-dot.live {
-    background: #5cd68a; box-shadow: 0 0 8px 2px rgba(92, 214, 138, 0.6);
-  }
-  #level-bar-track {
-    flex: 1; height: 8px; background: #11131a; border: 1px solid var(--border);
-    border-radius: 4px; overflow: hidden;
-  }
-  #level-bar-fill {
-    height: 100%; width: 0%; background: linear-gradient(90deg, #5cd68a, #e8c547, #e85d5d);
-    transition: width .08s linear;
-  }
-  #level-label { font-size: 11px; color: var(--muted); width: 70px; text-align: right; }
+:root {
+  --bg: #0b0d12; --bg-elevated: #12141b; --panel: #15171f; --panel-2: #1a1d27;
+  --border: #262a36; --border-soft: #1e2129;
+  --text: #e8eaf0; --muted: #8b92a5; --muted-2: #5f6678;
+  --accent: #5b8def; --accent-2: #7aa5ff;
+  --success: #4ade80; --danger: #f87171; --warning: #fbbf24;
+  --radius: 12px; --radius-sm: 8px;
+  --shadow: 0 8px 32px rgba(0,0,0,.45);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: radial-gradient(circle at 20% 0%, #141722 0%, var(--bg) 60%);
+  color: var(--text); display: flex; height: 100vh; overflow: hidden;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2e3a; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #363c4a; }
+#sidebar {
+  width: 340px; min-width: 340px; background: var(--panel);
+  border-right: 1px solid var(--border); padding: 20px 18px; overflow-y: auto;
+}
+#sidebar h1 { font-size: 15px; margin: 0 0 18px 0; font-weight: 700; letter-spacing: -.01em; }
+#sidebar h1 .brand-accent { color: var(--accent-2); }
+#main { flex: 1; display: flex; flex-direction: column; padding: 20px; min-width: 0; }
+h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted-2); margin: 22px 0 10px 0; font-weight: 700;
+}
+h2:first-of-type { margin-top: 0; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+select, input, textarea, button {
+  width: 100%; padding: 8px 10px; background: var(--bg-elevated); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13px;
+  font-family: inherit;
+}
+select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+button {
+  cursor: pointer; margin-top: 8px; transition: background .15s, opacity .15s, transform .05s;
+  font-weight: 600;
+}
+button:hover { background: #20232d; }
+button:active { transform: scale(0.98); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:disabled:hover { background: var(--bg-elevated); }
+button.primary { background: var(--accent); color: #0a0a0a; border: none; }
+button.primary:hover { background: var(--accent-2); }
+button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+button.danger:hover { background: rgba(248,113,113,.1); }
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; }
+#status {
+  font-size: 13px; color: var(--muted); line-height: 1.8; flex: 1; overflow-y: auto;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 18px;
+}
+#status .ok { color: var(--success); }
+#status .bad { color: var(--danger); }
+#status > div { padding: 3px 0; border-bottom: 1px solid var(--border-soft); }
+#status > div:last-child { border-bottom: none; }
+.field-group { display: none; }
+.field-group.active { display: block; }
+#toolbar { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+#toolbar-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+#toolbar-top h1 { margin: 0; font-size: 17px; font-weight: 700; }
+.status-dots { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; }
+.status-dot-group { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.phase-time { color: var(--muted-2); font-variant-numeric: tabular-nums; min-width: 42px; }
+#control-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px;
+}
+#control-bar .control-group { display: flex; align-items: center; gap: 8px; }
+#control-bar .divider { width: 1px; height: 24px; background: var(--border); flex-shrink: 0; }
+#control-bar select, #control-bar button {
+  margin: 0; width: auto; padding: 7px 12px; font-size: 12.5px; white-space: nowrap;
+}
+#source-select { min-width: 180px; max-width: 240px; }
+#refresh-sources { padding: 7px 9px; }
+.dot {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--muted-2);
+  transition: background .2s, box-shadow .2s; flex-shrink: 0;
+}
+.dot.green { background: var(--success); box-shadow: 0 0 10px 2px rgba(74,222,128,.55); }
+.dot.green.working { animation: agent-working-pulse .75s ease-in-out infinite alternate; }
+@keyframes agent-working-pulse {
+  from { opacity: .35; box-shadow: 0 0 4px 1px rgba(74,222,128,.25); transform: scale(.82); }
+  to { opacity: 1; box-shadow: 0 0 14px 4px rgba(74,222,128,.75); transform: scale(1.12); }
+}
+.dot.red { background: var(--danger); box-shadow: 0 0 10px 2px rgba(248,113,113,.4); }
+.dot.yellow { background: var(--warning); box-shadow: 0 0 8px 1px rgba(251,191,36,.32); }
+#clear-btn { margin-top: 0; width: auto; padding: 7px 14px; }
+#tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+.tab-btn {
+  margin: 0; width: auto; background: transparent; border: none; border-radius: 0;
+  padding: 9px 16px; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent;
+}
+.tab-btn:hover { background: transparent; color: var(--text); }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.tab-panel.active { display: flex; }
+#level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+#level-bar-track {
+  flex: 1; height: 7px; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 4px; overflow: hidden;
+}
+#level-bar-fill {
+  height: 100%; width: 0%; background: linear-gradient(90deg, var(--success), var(--warning), var(--danger));
+  transition: width .08s linear;
+}
+#level-label { font-size: 11px; color: var(--muted); width: 70px; text-align: right; }
+#transcript {
+  flex: 1; overflow-y: auto; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; font-size: 15.5px; line-height: 1.85;
+  text-align: justify; text-justify: inter-word;
+}
+.utterance-text { color: var(--text); }
+.utterance-text.partial { color: var(--muted); font-style: italic; }
+.utterance-text.capturing {
+  color: var(--success); font-weight: 600;
+}
+#ptt-btn.recording { background: var(--danger); color: #fff; border-color: var(--danger); }
+#ptt-btn.recording:hover { background: #ff8a8a; }
+#captured-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.captured-item {
+  display: flex; align-items: center; gap: 8px; background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px;
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.captured-item:hover { border-color: var(--accent); background: #171a24; }
+.captured-item .preview {
+  flex: 1; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+}
+.captured-item .badge {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 6px;
+  border-radius: 10px; flex-shrink: 0; font-weight: 700;
+}
+.badge.pending { background: rgba(251,191,36,.18); color: var(--warning); }
+.badge.sent { background: rgba(74,222,128,.18); color: var(--success); }
+.captured-item .remove-btn {
+  width: auto; margin: 0; padding: 2px 7px; background: transparent; border: none;
+  color: var(--muted); font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.captured-item .remove-btn:hover { color: var(--danger); background: transparent; }
+#captured-empty { font-size: 12px; color: var(--muted-2); padding: 8px 0; }
+#modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(5,6,10,.65);
+  z-index: 200; align-items: center; justify-content: center;
+}
+#modal-overlay.open { display: flex; }
+#modal-box {
+  width: min(640px, 90vw); max-height: 80vh; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
+}
+#modal-header .title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+#modal-close {
+  width: auto; margin: 0; padding: 4px 9px; background: transparent; border: none;
+  color: var(--muted); font-size: 18px; line-height: 1;
+}
+#modal-close:hover { color: var(--text); background: transparent; }
+#modal-body {
+  padding: 18px; overflow-y: auto; font-size: 15px; line-height: 1.7; white-space: pre-wrap;
+  flex: 1;
+}
+#modal-footer { display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border-soft); }
+#modal-footer button { margin-top: 0; }
+#history-list { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; padding-right: 4px; }
+.history-item {
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; cursor: pointer; transition: border-color .15s;
+}
+.history-item:hover { border-color: var(--accent); }
+.history-item .meta {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+  font-size: 11px; color: var(--muted-2);
+}
+.history-item .snippet {
+  font-size: 14px; line-height: 1.6; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.history-item.expanded .snippet {
+  -webkit-line-clamp: unset; display: block; white-space: pre-wrap; overflow: visible;
+}
+.history-item .meta-right { display: flex; align-items: center; gap: 8px; }
+.history-item .actions { display: none; gap: 8px; }
+.history-item.expanded .actions { display: flex; }
+.history-item .actions button {
+  margin: 0; width: auto; padding: 4px 11px; font-size: 11px;
+}
+#history-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
+#history-toolbar button { margin-top: 0; width: auto; padding: 7px 14px; }
+#history-empty { font-size: 13px; color: var(--muted-2); text-align: center; padding: 40px 0; }
+#questions-list { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; padding-right: 4px; }
+#questions-empty { font-size: 13px; color: var(--muted-2); text-align: center; padding: 40px 0; }
+#questions-toolbar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 14px; }
+#questions-toolbar button { margin: 0; width: auto; padding: 7px 14px; }
+.agent-hint { margin: 7px 0 0; color: var(--muted-2); font-size: 10.5px; line-height: 1.45; }
+.agent-parameters:empty::after {
+  content: "No configurable parameters for this provider.";
+  display: block; margin-top: 8px; color: var(--muted-2); font-size: 10.5px;
+}
+.question-run {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 3px 16px rgba(0,0,0,.18);
+}
+.question-run-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.question-run-meta { color: var(--muted-2); font-size: 11px; }
+.question-timings {
+  display: flex; gap: 14px; flex-wrap: wrap; margin: -4px 0 12px;
+  color: var(--muted-2); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.run-status {
+  flex-shrink: 0; padding: 3px 8px; border-radius: 999px; font-size: 10px;
+  font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--warning); background: rgba(251,191,36,.14);
+}
+.run-status.validated { color: var(--success); background: rgba(74,222,128,.14); }
+.run-status.rejected, .run-status.failed { color: var(--danger); background: rgba(248,113,113,.14); }
+.question-source {
+  white-space: pre-wrap; font-size: 13px; line-height: 1.55; color: var(--muted);
+  background: var(--bg-elevated); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 11px 12px; margin-bottom: 14px;
+}
+.question-draft { border-left: 2px solid var(--accent); padding-left: 12px; margin: 12px 0; }
+.question-draft.validated { border-left-color: var(--success); }
+.question-draft.rejected { border-left-color: var(--danger); opacity: .72; }
+.question-draft textarea { width: 100%; }
+.question-draft-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.question-number { font-size: 11px; color: var(--muted); font-weight: 700; }
+.question-review-status {
+  padding: 2px 7px; border-radius: 999px; font-size: 9px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--warning);
+  background: rgba(251,191,36,.14);
+}
+.question-review-status.validated { color: var(--success); background: rgba(74,222,128,.14); }
+.question-review-status.rejected { color: var(--danger); background: rgba(248,113,113,.14); }
+.question-remove { width: auto; margin: 0; padding: 3px 8px; color: var(--danger); background: transparent; border: none; }
+.question-excerpt { color: var(--muted-2); font-size: 11px; margin: 5px 0 0; }
+.question-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.question-actions button { width: auto; padding: 7px 13px; margin: 0; }
+.question-feedback { width: 100%; margin-top: 10px; min-height: 50px; }
+.question-add { width: auto; padding: 6px 11px; margin: 8px 0 0; }
 </style>
 </head>
 <body>
   <div id="sidebar">
-    <h1>liveqna &mdash; configuration</h1>
-
-
-    <h2>Source</h2>
-    <label for="source-select">Audio source</label>
-    <select id="source-select"></select>
-    <button id="refresh-sources">Refresh sources</button>
-
-    <div class="row">
-      <button id="start-btn" class="primary">Start</button>
-      <button id="stop-btn" class="danger">Stop</button>
-    </div>
+    <h1>live<span class="brand-accent">qna</span></h1>
 
     <h2>Capture params</h2>
     <label for="sample-rate">Sample rate (Hz)</label>
@@ -96,7 +273,6 @@
     <input id="min-speech-ms" type="number" step="50" value="250" />
     <label for="max-segment-ms">Max segment length (ms)</label>
     <input id="max-segment-ms" type="number" step="500" value="12000" />
-
 
     <h2>Model</h2>
     <label for="backend-select">Backend</label>
@@ -132,25 +308,126 @@
 
     <button id="apply-model" class="primary">Apply model config</button>
 
-    <div id="status"></div>
+    <h2>Agent models</h2>
+    <label for="supervisor-provider">Supervisor provider</label>
+    <select id="supervisor-provider">
+      <option value="openai">OpenAI</option>
+      <option value="ollama">Ollama (local)</option>
+    </select>
+    <label for="supervisor-model">Supervisor model</label>
+    <input id="supervisor-model" type="text" value="gpt-6-luna" />
+    <div id="supervisor-parameters" class="agent-parameters"></div>
+
+    <label for="question-provider">Question agent provider</label>
+    <select id="question-provider">
+      <option value="openai">OpenAI</option>
+      <option value="ollama">Ollama (local)</option>
+    </select>
+    <label for="question-model">Question agent model</label>
+    <input id="question-model" type="text" value="gpt-6.1-sol" />
+    <div id="question-parameters" class="agent-parameters"></div>
+    <p class="agent-hint">Parameters are supplied by the selected provider adapter. Credentials and provider connectivity remain configured on the orchestrator service.</p>
+
+    <h2>Captured pieces</h2>
+    <div id="captured-list"></div>
+    <p id="captured-empty">No captures yet.</p>
   </div>
+
 
   <div id="main">
     <div id="toolbar">
-      <h1>Live transcript</h1>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button id="clear-btn" style="margin-top:0; width:auto; padding:6px 14px;">Clear</button>
-        <span id="conn" class="disconnected">disconnected</span>
+      <div id="toolbar-top">
+        <h1>liveqna</h1>
+        <div class="status-dots">
+          <div class="status-dot-group"><div id="conn-dot" class="dot"></div> Live transcript</div>
+          <div class="status-dot-group"><div id="ptt-dot" class="dot"></div> Capturing</div>
+          <div class="status-dot-group">
+            <div id="question-generation-dot" class="dot green"></div>
+            Question generation <span id="question-generation-time" class="phase-time">ready</span>
+          </div>
+          <div class="status-dot-group">
+            <div id="question-retrieval-dot" class="dot green"></div>
+            Question retrieval <span id="question-retrieval-time" class="phase-time">ready</span>
+          </div>
+        </div>
       </div>
+
+      <div id="control-bar">
+        <div class="control-group">
+          <select id="source-select"></select>
+          <button id="refresh-sources" title="Refresh sources">&#x21bb;</button>
+        </div>
+        <button id="start-btn" class="primary" disabled>Start</button>
+        <button id="stop-btn" class="danger">Stop</button>
+        <div class="divider"></div>
+        <button id="ptt-btn">Start capturing</button>
+        <div class="divider"></div>
+        <button id="clear-btn">Clear transcript</button>
+        <button id="clear-all-btn" class="danger">Clear all</button>
+      </div>
+      <p id="start-gate-hint" style="font-size:11px; color:var(--muted-2); margin:0;">
+        Waiting for live transcript connection...
+      </p>
+      <p id="ptt-status" style="font-size:11px; color:var(--muted); margin:0; line-height:1.4;">
+        Not capturing.
+      </p>
     </div>
+
     <div id="level-row">
-      <div id="level-dot"></div>
+      <div id="level-dot" class="dot"></div>
       <div id="level-bar-track"><div id="level-bar-fill"></div></div>
       <div id="level-label">no signal</div>
     </div>
-    <div id="transcript"></div>
+
+    <div id="tabs">
+      <button class="tab-btn active" id="tab-live-btn" data-tab="live">Live transcript</button>
+      <button class="tab-btn" id="tab-history-btn" data-tab="history">History</button>
+      <button class="tab-btn" id="tab-questions-btn" data-tab="questions">Questions</button>
+      <button class="tab-btn" id="tab-logging-btn" data-tab="logging">Logging</button>
+    </div>
+
+
+    <div class="tab-panel active" id="tab-live">
+      <div id="transcript"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-history">
+      <div id="history-toolbar">
+        <span style="font-size:12px; color:var(--muted);">All captured dialogues from this session.</span>
+        <div class="row" style="gap:8px;">
+          <button id="history-export-btn" style="width:auto;">Export all</button>
+          <button id="history-clear-btn" class="danger" style="width:auto;">Clear history</button>
+        </div>
+      </div>
+      <div id="history-list"></div>
+      <p id="history-empty">No captured dialogues yet. Use "Start capturing" to mark a piece of the live transcript.</p>
+    </div>
+
+    <div class="tab-panel" id="tab-questions">
+      <div id="questions-toolbar">
+        <button id="questions-clear-btn" class="danger">Clear questions</button>
+      </div>
+      <div id="questions-list"></div>
+      <p id="questions-empty">No generated questions yet. Send a captured piece to create a review task.</p>
+    </div>
+
+    <div class="tab-panel" id="tab-logging">
+      <div id="status"></div>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
+
+  <div id="modal-overlay">
+    <div id="modal-box">
+      <div id="modal-header">
+        <span class="title" id="modal-title">Captured text</span>
+        <button id="modal-close">&times;</button>
+      </div>
+      <div id="modal-body"></div>
+      <div id="modal-footer"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=questions-v8"></script>
 </body>
 </html>

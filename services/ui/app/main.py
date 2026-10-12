@@ -13,11 +13,13 @@ import asyncio
 import json
 import logging
 import os
+from typing import Literal
 
 import websockets
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from . import proxy
 from .config_store import ConfigStore
@@ -31,7 +33,7 @@ app = FastAPI(title="liveqna-ui")
 
 @app.middleware("http")
 async def _no_cache_static(request, call_next):
-    """Force revalidation on every /static/* fetch.
+    """Force revalidation of the app shell and its static assets.
 
     FastAPI's StaticFiles already sends an ETag, so this doesn't disable
     caching outright -- it just stops the browser from trusting a
@@ -42,7 +44,9 @@ async def _no_cache_static(request, call_next):
     behavior until a hard refresh -- see conversation history).
     """
     response = await call_next(request)
-    if request.url.path.startswith("/static/"):
+    if request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -60,6 +64,60 @@ CAPTURE_WS_URL = CAPTURE_URL.replace("http://", "ws://").replace("https://", "ws
 browser_clients: set[WebSocket] = set()
 _transcript_relay_task: asyncio.Task | None = None
 _level_relay_task: asyncio.Task | None = None
+_orchestration_watch_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _broadcast_to_browsers(payload: dict) -> None:
+    dead = []
+    for client in list(browser_clients):
+        try:
+            await client.send_json(payload)
+        except Exception:
+            dead.append(client)
+    for client in dead:
+        browser_clients.discard(client)
+
+
+async def _watch_orchestration_run(run_id: str) -> None:
+    try:
+        while True:
+            await asyncio.sleep(0.2)
+            try:
+                status = await proxy.get_orchestration_run_status(run_id)
+            except proxy.UpstreamServiceError as exc:
+                if exc.status_code == 404:
+                    return
+                continue
+            if status["status"] in {"generating", "supervising"}:
+                continue
+            if status["status"] == "failed":
+                await _broadcast_to_browsers(
+                    {
+                        "kind": "orchestration_run_failed",
+                        "run_id": run_id,
+                        "error": status.get("error") or "question generation failed",
+                    }
+                )
+                return
+            try:
+                run = await proxy.get_orchestration_run(run_id)
+            except proxy.UpstreamServiceError:
+                continue
+            await _broadcast_to_browsers(
+                {"kind": "orchestration_run", "run": run}
+            )
+            return
+    finally:
+        _orchestration_watch_tasks.pop(run_id, None)
+
+
+def _schedule_orchestration_watch(run_id: str) -> None:
+    existing = _orchestration_watch_tasks.get(run_id)
+    if existing and not existing.done():
+        return
+    _orchestration_watch_tasks[run_id] = asyncio.create_task(
+        _watch_orchestration_run(run_id)
+    )
 
 
 @app.get("/")
@@ -198,4 +256,111 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
             await ws.send_json({"kind": "status", "capture": cap_status, "stt": stt_status})
         except Exception as exc:
             await ws.send_json({"kind": "error", "message": str(exc)})
+
+
+# --- push-to-talk capture (manual: user marks a time window, then sends
+# the captured text for downstream processing) ---------------------------
+
+class AgentModelSelection(BaseModel):
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    parameters: dict[str, str | bool | int | float | None] = Field(
+        default_factory=dict
+    )
+    # Accepted temporarily for compatibility with an already-open older UI.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] | None = None
+    service_tier: Literal[
+        "default", "fast", "ultrafast", "flex"
+    ] | None = None
+
+
+class PushToTalkSendRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=30_000)
+    supervisor_model: AgentModelSelection
+    question_model: AgentModelSelection
+
+
+class QuestionDraft(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    question: str = Field(min_length=1, max_length=2_000)
+    source_excerpt: str = Field(default="", max_length=2_000)
+    review_status: Literal["pending", "validated", "rejected"] = "pending"
+
+
+class ReviewRequest(BaseModel):
+    action: Literal["approve", "reject", "regenerate"]
+    question_id: str = Field(min_length=1, max_length=100)
+    questions: list[QuestionDraft] = Field(default_factory=list, max_length=20)
+    feedback: str = Field(default="", max_length=2_000)
+
+
+def _raise_upstream(exc: proxy.UpstreamServiceError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/push_to_talk/send")
+async def push_to_talk_send(req: PushToTalkSendRequest):
+    """Create a durable question-generation run from captured text."""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="no text captured")
+    logger.info("push-to-talk send: %d chars", len(text))
+    try:
+        accepted = await proxy.create_orchestration_run(
+            {
+                "text": text,
+                "supervisor_model": req.supervisor_model.model_dump(),
+                "question_model": req.question_model.model_dump(),
+            }
+        )
+        _schedule_orchestration_watch(accepted["run_id"])
+        return accepted
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.get("/api/orchestrator/model-options")
+async def orchestrator_model_options():
+    try:
+        return await proxy.orchestrator_model_options()
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.get("/api/orchestrator/runs")
+async def orchestration_runs():
+    try:
+        return await proxy.list_orchestration_runs()
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.delete("/api/orchestrator/runs")
+async def clear_orchestration_runs():
+    try:
+        return await proxy.clear_orchestration_runs()
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.get("/api/orchestrator/runs/{run_id}")
+async def orchestration_run(run_id: str):
+    try:
+        return await proxy.get_orchestration_run(run_id)
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.post("/api/orchestrator/runs/{run_id}/review")
+async def review_orchestration_run(run_id: str, req: ReviewRequest):
+    try:
+        result = await proxy.review_orchestration_run(run_id, req.model_dump())
+        if result.get("accepted"):
+            _schedule_orchestration_watch(run_id)
+        return result
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
 
