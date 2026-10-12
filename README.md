@@ -53,3 +53,12 @@ Run the orchestrator tests without starting services:
 UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=services/orchestrator \
   uv run pytest -q services/orchestrator/tests
 ```
+
+## Offline ingestion
+
+The offline ingestion service is being delivered in independently reviewed
+phases. Phase 0 adds its PostgreSQL-backed service foundation and dependency
+health checks; it does not yet ingest documents or change the UI.
+
+The reviewed lifecycle and phased implementation plan are documented in
+[`services/ingestion/README.md`](services/ingestion/README.md).

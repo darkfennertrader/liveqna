@@ -29,6 +29,7 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "webrtcvad>=2.0.10",
     "websockets>=14,<17",
+    "psycopg[binary,pool]>=3.2,<4",
 ]
 
 [dependency-groups]

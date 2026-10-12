@@ -6,6 +6,61 @@ services:
     networks: [liveqna_net]
     restart: unless-stopped
 
+  postgres:
+    image: postgres:18.6
+    environment:
+      - POSTGRES_DB=${INGESTION_DB_NAME:-liveqna}
+      - POSTGRES_USER=${INGESTION_DB_USER:-liveqna}
+      - POSTGRES_PASSWORD=${INGESTION_DB_PASSWORD:-liveqna-local}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [liveqna_net]
+    restart: unless-stopped
+
+  ingestion:
+    build: ./services/ingestion
+    env_file: .env
+    environment:
+      - INGESTION_DATABASE_URL=postgresql://${INGESTION_DB_USER:-liveqna}:${INGESTION_DB_PASSWORD:-liveqna-local}@postgres:5432/${INGESTION_DB_NAME:-liveqna}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - INGESTION_DOCUMENT_STORAGE_DIR=/data/documents
+      - INGESTION_MODEL_CACHE_DIR=/models
+      - INGESTION_MIGRATIONS_DIR=/app/migrations
+    volumes:
+      - ./.cache/ingestion/documents:/data/documents
+      - ./.cache/ingestion/models:/models
+    ports:
+      - "127.0.0.1:${INGESTION_PORT:-8084}:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8084/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [liveqna_net]
+    restart: unless-stopped
+
   capture:
     build: ./services/capture
     env_file: .env
@@ -66,3 +121,6 @@ services:
 
 networks:
   liveqna_net:
+
+volumes:
+  postgres_data:
