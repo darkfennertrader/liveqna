@@ -349,9 +349,22 @@ model, prompt version, render version, response hash, and per-slide timing are
 recorded so the result is reproducible and can be regenerated after a model or
 prompt change. Credentials and provider-specific parameters remain in service
 configuration rather than extraction code. Set `INGESTION_VISION_PROVIDER` and
-`INGESTION_VISION_MODEL` for call 1, and `INGESTION_REVIEW_PROVIDER` and
-`INGESTION_REVIEW_MODEL` for call 2. The providers and models can be swapped
-independently.
+`INGESTION_VISION_MODEL` for call 1, and `INGESTION_JUDGE_PROVIDER` and
+`INGESTION_JUDGE_MODEL` for call 2. `INGESTION_VISION_TEMPERATURE` and
+`INGESTION_JUDGE_TEMPERATURE` independently control their sampling; a blank
+value omits temperature from that request. The providers and models can be
+swapped independently.
+
+Human inconsistency resolution uses one document-level workflow shared by every
+source format. Extractors contribute structured findings with a source locator;
+the UI opens all resulting questions from one **Resolve inconsistencies**
+action. PPTX is the first extractor that currently emits these structured
+findings. `INGESTION_RESOLVER_PROVIDER` and `INGESTION_RESOLVER_MODEL` configure
+the separate model that turns the human answers into proposed normalized
+content; `INGESTION_RESOLVER_TEMPERATURE` controls only that resolver call.
+Proposed changes are never applied until the reviewer selects
+**Apply all resolutions**. Element-level alignment metrics remain in
+`normalized.json` for audit but are hidden from the human review report.
 
 A PPTX run is not `READY` when a slide cannot be rendered, required visual
 analysis fails, structured output is invalid, or native and visual extraction
@@ -914,7 +927,7 @@ exception report/PDF, and rendered-slide images. PDF folders
 keep their normalized output beside any rendered-page evidence; transcript,
 DOCX, XLSX, and Markdown/text samples each have their own folder. The owner
 records `ACCEPT` or `REJECT` in the checklist's Human decision column; only rows
-marked `HUMAN REVIEW REQUIRED` keep the gate open. `INGESTION_REVIEW_TIMEZONE` controls
+marked `HUMAN REVIEW REQUIRED` keep the gate open. `INGESTION_GATE2_TIMEZONE` controls
 the human-readable run timestamp and defaults to `Europe/Rome`. The package can
 be regenerated locally, without new model or network calls, using
 `scripts/build_gate2_review_package.py`.

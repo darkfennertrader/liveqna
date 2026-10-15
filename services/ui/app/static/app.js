@@ -7,8 +7,8 @@ const liveProjectSelect = document.getElementById("live-project-select");
 const refreshLiveProjectsBtn = document.getElementById("refresh-live-projects");
 const backendSelect = document.getElementById("backend-select");
 const transcriptEl = document.getElementById("transcript");
+const ingestionDotEl = document.getElementById("ingestion-dot");
 const connDot = document.getElementById("conn-dot");
-const autoCaptureDot = document.getElementById("auto-capture-dot");
 const statusEl = document.getElementById("status");
 const groupLocal = document.getElementById("group-local");
 const groupOnline = document.getElementById("group-online");
@@ -34,8 +34,10 @@ const questionProviderEl = document.getElementById("question-provider");
 const questionModelEl = document.getElementById("question-model");
 const questionParametersEl = document.getElementById("question-parameters");
 const ingestionProjectSelect = document.getElementById("ingestion-project-select");
-const ingestionNewProjectGroup = document.getElementById("ingestion-new-project-group");
 const ingestionNewProjectEl = document.getElementById("ingestion-new-project");
+const ingestionCreateProjectBtn = document.getElementById("ingestion-create-project-btn");
+const ingestionDeleteProjectBtn = document.getElementById("ingestion-delete-project-btn");
+const ingestionProjectGateEl = document.getElementById("ingestion-project-gate");
 const ingestionFileInputEl = document.getElementById("ingestion-file-input");
 const ingestionSelectBtn = document.getElementById("ingestion-select-btn");
 const ingestionStartBtn = document.getElementById("ingestion-start-btn");
@@ -51,8 +53,50 @@ let ingestionSelections = [];
 let ingestionLibrary = [];
 let ingestionLibraryLoading = false;
 let ingestionPollTimer = null;
+let projectDeletionPollTimer = null;
+let projectMutationPending = false;
+let ingestionRunning = false;
 const ingestionDetails = new Map();
 let activeLiveProject = null;
+
+function liveSessionBlocksIngestion() {
+  return captureRunning || startPending || liveSessionEnding || activeLiveProject !== null;
+}
+
+function updateOperationalIndicators() {
+  const liveBusy = liveSessionBlocksIngestion();
+  ingestionDotEl.classList.toggle("green", !liveBusy);
+  ingestionDotEl.classList.toggle("red", liveBusy);
+  ingestionDotEl.classList.toggle("working", ingestionRunning && !liveBusy);
+  ingestionDotEl.title = liveBusy
+    ? "Ingestion unavailable while Live Q&A is active"
+    : ingestionRunning
+      ? "Document ingestion is running"
+      : "Ingestion ready";
+
+  connDot.classList.toggle("green", !ingestionRunning);
+  connDot.classList.toggle("red", ingestionRunning);
+  connDot.classList.toggle("working", liveBusy && !ingestionRunning);
+  connDot.title = ingestionRunning
+    ? "Live Q&A unavailable while ingestion is running"
+    : liveBusy
+      ? "Live transcript is active"
+      : "Live Q&A ready";
+}
+
+function setIngestionWorking(working) {
+  ingestionRunning = working;
+  updateOperationalIndicators();
+  updateCaptureButtons();
+  updateIngestionStartAvailability();
+}
+
+function updateIngestionStartAvailability() {
+  const pending = ingestionSelections.some(
+    (item) => item.status === "selected" || item.status === "error"
+  );
+  ingestionStartBtn.disabled = !pending || ingestionRunning || liveSessionBlocksIngestion();
+}
 
 function agentConfigElements(kind) {
   return kind === "supervisor"
@@ -323,21 +367,31 @@ function selectedLiveProject() {
   return { id: option.value, name: option.dataset.projectName || option.textContent };
 }
 
-function selectedIngestionProjectName() {
-  if (ingestionProjectSelect.value === "__new__") {
-    return ingestionNewProjectEl.value.trim();
-  }
+function selectedIngestionProject() {
   const option = ingestionProjectSelect.selectedOptions[0];
-  return option?.dataset.projectName || "";
+  if (!option || !option.value) return null;
+  return {
+    id: option.value,
+    name: option.dataset.projectName || option.textContent,
+    deletionStatus: option.dataset.deletionStatus || "ACTIVE",
+  };
 }
 
 function updateIngestionProjectChoice() {
-  const creating = ingestionProjectSelect.value === "__new__";
-  ingestionNewProjectGroup.style.display = creating ? "block" : "none";
+  const project = selectedIngestionProject();
+  const ready = project?.deletionStatus === "ACTIVE" && !projectMutationPending;
+  ingestionSelectBtn.disabled = !ready;
+  ingestionFileInputEl.disabled = !ready;
+  ingestionDeleteProjectBtn.disabled = !project || projectMutationPending;
+  ingestionCreateProjectBtn.disabled = projectMutationPending || !ingestionNewProjectEl.value.trim();
+  ingestionProjectGateEl.textContent = project?.deletionStatus === "DELETE_FAILED"
+    ? "Project deletion failed. Use Delete project to retry."
+    : "Select or create a project before selecting source files.";
+  ingestionProjectGateEl.style.display = ready ? "none" : "block";
   renderIngestionSelections();
 }
 
-async function loadProjectSelectors() {
+async function loadProjectSelectors(preferredIngestionProjectId = null) {
   const previousLive = liveProjectSelect.value;
   const previousIngestion = ingestionProjectSelect.value;
   refreshLiveProjectsBtn.disabled = true;
@@ -346,39 +400,51 @@ async function loadProjectSelectors() {
     liveProjectSelect.innerHTML = "";
     ingestionProjectSelect.innerHTML = "";
 
+    const activeProjects = projects.filter(
+      (project) => (project.deletion_status || "ACTIVE") === "ACTIVE"
+    );
     const livePlaceholder = document.createElement("option");
     livePlaceholder.value = "";
-    livePlaceholder.textContent = projects.length ? "Select project..." : "No projects available";
+    livePlaceholder.textContent = activeProjects.length ? "Select project..." : "No projects available";
     liveProjectSelect.appendChild(livePlaceholder);
     const ingestionPlaceholder = document.createElement("option");
     ingestionPlaceholder.value = "";
     ingestionPlaceholder.textContent = "Select project...";
     ingestionProjectSelect.appendChild(ingestionPlaceholder);
 
-    for (const project of projects) {
+    for (const project of activeProjects) {
       for (const select of [liveProjectSelect, ingestionProjectSelect]) {
         const option = document.createElement("option");
         option.value = project.id;
         option.dataset.projectName = project.name;
+        option.dataset.deletionStatus = project.deletion_status || "ACTIVE";
         option.textContent = project.name;
         select.appendChild(option);
       }
     }
-    const createNew = document.createElement("option");
-    createNew.value = "__new__";
-    createNew.textContent = "+ Create new project";
-    ingestionProjectSelect.appendChild(createNew);
-
+    for (const project of projects.filter(
+      (candidate) => candidate.deletion_status === "DELETE_FAILED"
+    )) {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.dataset.projectName = project.name;
+      option.dataset.deletionStatus = project.deletion_status;
+      option.textContent = `${project.name} (delete failed)`;
+      ingestionProjectSelect.appendChild(option);
+    }
     if ([...liveProjectSelect.options].some((option) => option.value === previousLive)) {
       liveProjectSelect.value = previousLive;
     }
-    if ([...ingestionProjectSelect.options].some((option) => option.value === previousIngestion)) {
-      ingestionProjectSelect.value = previousIngestion;
+    const requestedIngestion = preferredIngestionProjectId || previousIngestion;
+    if ([...ingestionProjectSelect.options].some((option) => option.value === requestedIngestion)) {
+      ingestionProjectSelect.value = requestedIngestion;
     }
+    return projects;
   } catch (error) {
     liveProjectSelect.innerHTML = '<option value="">Projects unavailable</option>';
-    ingestionProjectSelect.innerHTML = '<option value="">Projects unavailable</option><option value="__new__">+ Create new project</option>';
+    ingestionProjectSelect.innerHTML = '<option value="">Projects unavailable</option>';
     setStatus(`Could not load projects: ${error.message}`, false);
+    return null;
   } finally {
     refreshLiveProjectsBtn.disabled = false;
     updateIngestionProjectChoice();
@@ -388,11 +454,14 @@ async function loadProjectSelectors() {
 
 function updateCaptureButtons() {
   const project = selectedLiveProject();
-  startBtn.disabled = !wsConnected || !project || captureRunning || startPending || liveSessionEnding;
+  startBtn.disabled = !wsConnected || !project || captureRunning || startPending || liveSessionEnding || ingestionRunning;
   stopBtn.disabled = !captureRunning || startPending || liveSessionEnding;
   liveProjectSelect.disabled = captureRunning || startPending || liveSessionEnding;
   refreshLiveProjectsBtn.disabled = captureRunning || startPending || liveSessionEnding;
-  if (!project) {
+  if (ingestionRunning) {
+    startGateHint.textContent = "Wait for document ingestion to finish before starting Live Q&A.";
+    startGateHint.style.display = "block";
+  } else if (!project) {
     startGateHint.textContent = "Select a project before starting the live call.";
     startGateHint.style.display = "block";
   } else if (!wsConnected) {
@@ -401,6 +470,8 @@ function updateCaptureButtons() {
   } else {
     startGateHint.style.display = "none";
   }
+  updateOperationalIndicators();
+  updateIngestionStartAvailability();
 }
 
 
@@ -412,8 +483,7 @@ function updateCaptureButtons() {
 let liveTranscriptActive = false;
 function updateConnDot() {
   const live = wsConnected && captureRunning;
-  connDot.classList.toggle("green", live);
-  connDot.classList.toggle("red", !live);
+  updateOperationalIndicators();
   // Log the actual edge (not every call -- this runs on every WS/status
   // message) so the Logging tab records exactly one "started"/"ended"
   // pair per real transition, with the real datetime it happened.
@@ -434,15 +504,8 @@ function setConnDot(connected) {
 
 function setCaptureDot(running) {
   captureRunning = running;
-  updateAutomaticCaptureDot(false);
   updateConnDot();
   updateCaptureButtons();
-}
-
-function updateAutomaticCaptureDot(working = false) {
-  autoCaptureDot.classList.toggle("green", captureRunning);
-  autoCaptureDot.classList.toggle("red", !captureRunning);
-  autoCaptureDot.classList.toggle("working", captureRunning && working);
 }
 
 
@@ -498,8 +561,17 @@ function renderCapturedList() {
 function recordAutomaticCandidate(message) {
   const id = `${message.session_id}:${message.sequence}`;
   if (capturedItems.some((item) => item.id === id)) return;
+  const previouslyWait = capturedItems.some(
+    (item) => item.sessionId === message.session_id && item.status === "wait"
+  );
+  if (message.decision !== "wait") {
+    capturedItems = capturedItems.filter(
+      (item) => !(item.sessionId === message.session_id && item.status === "wait")
+    );
+  }
   const result = {
     id,
+    sessionId: message.session_id,
     text: message.source_text,
     status: message.decision,
     reason: message.reason || "",
@@ -507,6 +579,7 @@ function recordAutomaticCandidate(message) {
     runId: message.run_id || null,
     projectId: activeLiveProject?.id || null,
     projectName: activeLiveProject?.name || null,
+    previouslyWait: message.decision === "ready" && previouslyWait,
   };
   capturedItems.push(result);
   renderCapturedList();
@@ -593,9 +666,7 @@ function ingestionStatusNode(selection) {
 function renderIngestionSelections() {
   ingestionFileListEl.innerHTML = "";
   ingestionSelectionEmptyEl.style.display = ingestionSelections.length ? "none" : "block";
-  ingestionStartBtn.disabled = !selectedIngestionProjectName() || !ingestionSelections.some(
-    (item) => item.status === "selected" || item.status === "error"
-  );
+  updateIngestionStartAvailability();
 
   for (const selection of ingestionSelections) {
     const card = document.createElement("div");
@@ -608,7 +679,7 @@ function renderIngestionSelections() {
     name.textContent = selection.file.name;
     const size = document.createElement("div");
     size.className = "ingestion-file-meta";
-    size.textContent = humanFileSize(selection.file.size);
+    size.textContent = `${humanFileSize(selection.file.size)} · Project: ${selection.projectName}`;
     nameWrap.append(name, size);
     head.append(nameWrap, ingestionStatusNode(selection));
     card.appendChild(head);
@@ -658,10 +729,19 @@ function renderIngestionSelections() {
 }
 
 function addIngestionFiles(files) {
+  const project = selectedIngestionProject();
+  if (!project || project.deletionStatus !== "ACTIVE") {
+    ingestionFileInputEl.value = "";
+    setStatus("Select or create a project before selecting source files.", false);
+    updateIngestionProjectChoice();
+    return;
+  }
   for (const file of files) {
     ingestionSelections.push({
       id: crypto.randomUUID(),
       file,
+      projectId: project.id,
+      projectName: project.name,
       contentProfile: file.name.toLowerCase().endsWith(".pptx")
         ? "general_presentation"
         : "general_document",
@@ -686,9 +766,7 @@ async function uploadIngestionSelection(selection) {
     }
     const form = new FormData();
     form.append("file", selection.file);
-    const projectName = selectedIngestionProjectName();
-    if (!projectName) throw new Error("Select an existing project or enter a new project name.");
-    form.append("project_name", projectName);
+    form.append("project_id", selection.projectId);
     form.append("content_profile", profile);
     form.append("retrieval_metadata", JSON.stringify(metadata));
     const accepted = await requestJson("/api/ingestion/upload", {
@@ -709,20 +787,97 @@ async function startIngestion() {
     (item) => item.status === "selected" || item.status === "error"
   );
   if (!pending.length) return;
+  setIngestionWorking(true);
   ingestionStartBtn.disabled = true;
   try {
     const runtime = await requestJson("/api/runtime/start-ingestion", { method: "POST" });
-    const detail = runtime.mode === "parallel"
-      ? " Remote-only ingestion is running in parallel with Live Q&A."
+    const detail = runtime.mode === "remote_ingestion"
+      ? " Live Q&A is unavailable until ingestion finishes."
       : " Live Q&A models were unloaded so ingestion can use the GPU.";
     setStatus(`Started ${pending.length} document ingestion job${pending.length === 1 ? "" : "s"} in the background.${detail}`);
   } catch (error) {
+    setIngestionWorking(false);
     setStatus(`Could not start ingestion: ${error.message}`, false);
     renderIngestionSelections();
     return;
   }
   await Promise.allSettled(pending.map(uploadIngestionSelection));
   await Promise.all([loadIngestionLibrary(), loadProjectSelectors()]);
+}
+
+async function createIngestionProject() {
+  const name = ingestionNewProjectEl.value.trim();
+  if (!name || projectMutationPending) return;
+  projectMutationPending = true;
+  updateIngestionProjectChoice();
+  try {
+    const project = await requestJson("/api/ingestion/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    ingestionNewProjectEl.value = "";
+    await loadProjectSelectors(project.id);
+    setStatus(`Project "${project.name}" created. You can now select source files.`);
+  } catch (error) {
+    setStatus(`Project creation failed: ${error.message}`, false);
+  } finally {
+    projectMutationPending = false;
+    updateIngestionProjectChoice();
+  }
+}
+
+function scheduleProjectDeletionPoll(projectId, projectName) {
+  if (projectDeletionPollTimer) clearTimeout(projectDeletionPollTimer);
+  projectDeletionPollTimer = setTimeout(async () => {
+    const projects = await loadProjectSelectors();
+    await loadIngestionLibrary(true);
+    if (!projects) {
+      scheduleProjectDeletionPoll(projectId, projectName);
+      return;
+    }
+    const project = projects.find((candidate) => candidate.id === projectId);
+    if (!project) {
+      projectDeletionPollTimer = null;
+      setStatus(`Project "${projectName}" and all linked data were deleted.`);
+      return;
+    }
+    if (project.deletion_status === "DELETE_FAILED") {
+      projectDeletionPollTimer = null;
+      setStatus(`Project deletion failed: ${project.deletion_error || "unknown error"}`, false);
+      return;
+    }
+    scheduleProjectDeletionPoll(projectId, projectName);
+  }, 1000);
+}
+
+async function deleteSelectedIngestionProject() {
+  const project = selectedIngestionProject();
+  if (!project || projectMutationPending) return;
+  const warning = `Permanently delete project "${project.name}"?\n\nThis deletes every linked document and version, stored source and normalized files, ingestion database records, and Qdrant points.`;
+  if (!window.confirm(warning)) return;
+
+  projectMutationPending = true;
+  updateIngestionProjectChoice();
+  try {
+    const result = await requestJson(`/api/ingestion/projects/${project.id}`, {
+      method: "DELETE",
+    });
+    ingestionSelections = ingestionSelections.filter(
+      (selection) => selection.projectId !== project.id
+    );
+    ingestionProjectSelect.value = "";
+    renderIngestionSelections();
+    setStatus(
+      `Deleting project "${project.name}" in the background: ${result.document_count} document${result.document_count === 1 ? "" : "s"}, ${result.version_count} version${result.version_count === 1 ? "" : "s"}.`
+    );
+    scheduleProjectDeletionPoll(project.id, project.name);
+  } catch (error) {
+    setStatus(`Project deletion failed: ${error.message}`, false);
+  } finally {
+    projectMutationPending = false;
+    updateIngestionProjectChoice();
+  }
 }
 
 function metadataTags(metadata, prefix = "") {
@@ -762,33 +917,11 @@ async function approveIngestionVersion(versionId) {
   }
 }
 
-async function rejectIngestionVersion(versionId) {
-  if (!window.confirm("Reject and delete this draft version and its normalized artifacts?")) return;
-  try {
-    await requestJson(`/api/ingestion/versions/${versionId}`, { method: "DELETE" });
-    ingestionDetails.delete(versionId);
-    setStatus("Draft document version rejected and removed.");
-    await loadIngestionLibrary(true);
-  } catch (error) {
-    setStatus(`Rejection failed: ${error.message}`, false);
-  }
-}
-
-async function acceptReviewedVersion(versionId) {
-  if (!window.confirm("Accept this reviewed presentation and approve its normalized version?")) return;
-  try {
-    await requestJson(`/api/ingestion/versions/${versionId}/approve`, { method: "POST" });
-    ingestionDetails.delete(versionId);
-    setStatus("Presentation accepted. Gate 2 is now PASS.");
-    await loadIngestionLibrary(true);
-  } catch (error) {
-    setStatus(`Accept failed: ${error.message}`, false);
-  }
-}
-
 async function reingestVersion(versionId, sourcePath) {
   if (!window.confirm(`Edit and save the source file first:\n\n${sourcePath}\n\nReingest it now from this same location?`)) return;
+  setIngestionWorking(true);
   try {
+    await requestJson("/api/runtime/start-ingestion", { method: "POST" });
     await requestJson(`/api/ingestion/versions/${versionId}/reingest`, {
       method: "POST",
     });
@@ -796,15 +929,19 @@ async function reingestVersion(versionId, sourcePath) {
     setStatus("Presentation reingestion started in the background.");
     await loadIngestionLibrary(true);
   } catch (error) {
+    setIngestionWorking(false);
     setStatus(`Reingestion failed: ${error.message}`, false);
   }
 }
 
 async function deleteIngestionDocument(documentRecord, versionCount) {
   const retry = documentRecord.deletion_status === "DELETE_FAILED";
+  const versionScope = versionCount === 1
+    ? "including its only registered version"
+    : `including the current version and all ${versionCount - 1} previous versions (${versionCount} versions total)`;
   const prompt = retry
-    ? `Retry deletion of "${documentRecord.title}" and all ${versionCount} version${versionCount === 1 ? "" : "s"}?`
-    : `Permanently delete "${documentRecord.title}" and all ${versionCount} version${versionCount === 1 ? "" : "s"}?\n\nThis removes its database records, stored files, normalized outputs, and any Qdrant points.`;
+    ? `Retry deletion of "${documentRecord.title}", ${versionScope}?`
+    : `Permanently delete "${documentRecord.title}", ${versionScope}?\n\nThis removes its database records, stored files, normalized outputs, and any Qdrant points.`;
   if (!window.confirm(prompt)) return;
 
   documentRecord.deletion_status = "DELETING";
@@ -825,7 +962,19 @@ async function deleteIngestionDocument(documentRecord, versionCount) {
   }
 }
 
-function renderIngestionVersion(documentRecord, version) {
+function createIngestionDeleteButton(documentRecord, versionCount) {
+  const remove = document.createElement("button");
+  remove.className = "action-delete";
+  remove.type = "button";
+  remove.textContent = "Delete";
+  remove.title = "Delete the entire document, all versions, stored files, database records, normalized outputs, and Qdrant data.";
+  remove.addEventListener("click", () =>
+    deleteIngestionDocument(documentRecord, versionCount)
+  );
+  return remove;
+}
+
+function renderIngestionVersion(documentRecord, version, versionCount, showDocumentDelete) {
   const detail = ingestionDetails.get(version.id);
   const extraction = detail?.extraction;
   const processing = (detail?.version?.processing_status || version.processing_status).toLowerCase();
@@ -833,8 +982,8 @@ function renderIngestionVersion(documentRecord, version) {
   const active = processing === "queued" || processing === "running";
   const isPresentation = extraction?.source_format === "pptx"
     || documentRecord.title.toLowerCase().endsWith(".pptx");
-  const reviewRequired = isPresentation && processing === "needs_review";
-  const passed = isPresentation && processing === "ready";
+  const reviewRequired = processing === "needs_review";
+  const passed = processing === "ready";
   const card = document.createElement("div");
   card.className = "ingestion-version";
   const head = document.createElement("div");
@@ -872,7 +1021,8 @@ function renderIngestionVersion(documentRecord, version) {
   if (reviewRequired) {
     const path = document.createElement("div");
     path.className = "ingestion-review-path";
-    path.textContent = `See ${extraction.source_full_path || version.file_path}`;
+    const sourcePath = extraction.source_full_path || version.file_path;
+    path.textContent = `Source: ${sourcePath.replace(/^\/home\/ray(?=\/|$)/, "~")}`;
     card.appendChild(path);
   } else if (extraction?.quality_report) {
     const quality = document.createElement("div");
@@ -893,10 +1043,22 @@ function renderIngestionVersion(documentRecord, version) {
   actions.className = "ingestion-actions";
   if (!deleting && reviewRequired && lifecycle === "draft") {
     const accept = document.createElement("button");
-    accept.className = "primary";
+    accept.className = "action-accept";
     accept.textContent = "Accept";
-    accept.addEventListener("click", () => acceptReviewedVersion(version.id));
+    accept.disabled = true;
+    accept.title = "Resolve every inconsistency before accepting this document.";
+    const resolve = document.createElement("button");
+    resolve.className = "action-resolve";
+    resolve.textContent = "Resolve";
+    resolve.addEventListener("click", () => {
+      window.open(
+        `/api/ingestion/versions/${version.id}/review-report`,
+        "_blank",
+        "noopener,noreferrer"
+      );
+    });
     const reingest = document.createElement("button");
+    reingest.className = "action-reingest";
     reingest.textContent = "Reingest";
     reingest.addEventListener("click", () =>
       reingestVersion(
@@ -904,12 +1066,20 @@ function renderIngestionVersion(documentRecord, version) {
         extraction.source_full_path || version.file_path
       )
     );
-    const reject = document.createElement("button");
-    reject.className = "danger";
-    reject.textContent = "Reject";
-    reject.addEventListener("click", () => rejectIngestionVersion(version.id));
-    actions.append(accept, reingest, reject);
+    actions.append(accept, resolve, reingest);
   } else if (!deleting && ["ready", "needs_review"].includes(processing)) {
+    if (isPresentation) {
+      const report = document.createElement("button");
+      report.textContent = "Open review report";
+      report.addEventListener("click", () => {
+        window.open(
+          `/api/ingestion/versions/${version.id}/review-report`,
+          "_blank",
+          "noopener,noreferrer"
+        );
+      });
+      actions.appendChild(report);
+    }
     const normalized = document.createElement("button");
     normalized.textContent = "Download normalized JSON";
     normalized.addEventListener("click", () => downloadNormalized(version.id, documentRecord.title));
@@ -917,17 +1087,13 @@ function renderIngestionVersion(documentRecord, version) {
   }
   if (!deleting && !reviewRequired && lifecycle === "draft" && processing === "ready") {
     const approve = document.createElement("button");
-    approve.className = "primary";
-    approve.textContent = "Approve";
+    approve.className = "action-accept";
+    approve.textContent = "Accept";
     approve.addEventListener("click", () => approveIngestionVersion(version.id));
     actions.appendChild(approve);
   }
-  if (!deleting && !reviewRequired && lifecycle === "draft" && !active) {
-    const reject = document.createElement("button");
-    reject.className = "danger";
-    reject.textContent = "Reject";
-    reject.addEventListener("click", () => rejectIngestionVersion(version.id));
-    actions.appendChild(reject);
+  if (!deleting && !active && showDocumentDelete) {
+    actions.appendChild(createIngestionDeleteButton(documentRecord, versionCount));
   }
   if (actions.childElementCount) card.appendChild(actions);
   return card;
@@ -974,19 +1140,6 @@ function renderIngestionLibrary() {
       }
       controls.appendChild(deletionStatus);
     }
-    const remove = document.createElement("button");
-    remove.className = "ingestion-document-delete";
-    remove.type = "button";
-    remove.textContent = "×";
-    remove.title = documentRecord.deletion_status === "DELETE_FAILED"
-      ? "Retry deleting this document"
-      : "Delete this document and all versions";
-    remove.setAttribute("aria-label", remove.title);
-    remove.disabled = documentRecord.deletion_status === "DELETING";
-    remove.addEventListener("click", () =>
-      deleteIngestionDocument(documentRecord, versions.length)
-    );
-    controls.appendChild(remove);
     head.append(titleWrap, controls);
     wrapper.appendChild(head);
 
@@ -1002,8 +1155,13 @@ function renderIngestionLibrary() {
       empty.textContent = "No versions registered.";
       wrapper.appendChild(empty);
     }
-    for (const version of versions) {
-      wrapper.appendChild(renderIngestionVersion(documentRecord, version));
+    for (const [index, version] of versions.entries()) {
+      wrapper.appendChild(renderIngestionVersion(
+        documentRecord,
+        version,
+        versions.length,
+        index === 0
+      ));
     }
     ingestionLibraryEl.appendChild(wrapper);
   }
@@ -1041,17 +1199,25 @@ async function loadIngestionLibrary(force = false) {
       }
     }));
     renderIngestionLibrary();
-    const stillActive = ingestionLibrary.some(
-      (group) => group.document.deletion_status === "DELETING"
-    ) || versions.some((version) =>
+    const ingestionActive = versions.some((version) =>
       ["QUEUED", "RUNNING"].includes(
         ingestionDetails.get(version.id)?.version?.processing_status || version.processing_status
       )
+    ) || ingestionSelections.some((selection) =>
+      ["uploading", "queued"].includes(selection.status)
     );
+    setIngestionWorking(ingestionActive);
+    const stillActive = ingestionLibrary.some(
+      (group) => group.document.deletion_status === "DELETING"
+    ) || ingestionActive;
     if (stillActive) {
       ingestionPollTimer = setTimeout(() => loadIngestionLibrary(), 1500);
     }
   } catch (error) {
+    const localWorkActive = ingestionSelections.some((selection) =>
+      ["uploading", "queued"].includes(selection.status)
+    );
+    setIngestionWorking(localWorkActive);
     ingestionLibraryEl.innerHTML = "";
     ingestionLibraryEmptyEl.style.display = "block";
     ingestionLibraryEmptyEl.textContent = `Ingestion service unavailable: ${error.message}`;
@@ -1060,15 +1226,29 @@ async function loadIngestionLibrary(force = false) {
   }
 }
 
-ingestionSelectBtn.addEventListener("click", () => ingestionFileInputEl.click());
+ingestionSelectBtn.addEventListener("click", () => {
+  if (selectedIngestionProject()?.deletionStatus !== "ACTIVE") {
+    setStatus("Select or create a project before selecting source files.", false);
+    return;
+  }
+  ingestionFileInputEl.click();
+});
 ingestionFileInputEl.addEventListener("change", () => addIngestionFiles(ingestionFileInputEl.files));
 ingestionStartBtn.addEventListener("click", startIngestion);
+ingestionCreateProjectBtn.addEventListener("click", createIngestionProject);
+ingestionDeleteProjectBtn.addEventListener("click", deleteSelectedIngestionProject);
 ingestionRefreshBtn.addEventListener("click", () => {
   loadIngestionLibrary(true);
   loadProjectSelectors();
 });
 ingestionProjectSelect.addEventListener("change", updateIngestionProjectChoice);
-ingestionNewProjectEl.addEventListener("input", renderIngestionSelections);
+ingestionNewProjectEl.addEventListener("input", updateIngestionProjectChoice);
+ingestionNewProjectEl.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    createIngestionProject();
+  }
+});
 
 function upsertOrchestrationRun(run) {
   const index = orchestrationRuns.findIndex((item) => item.run_id === run.run_id);
@@ -1078,17 +1258,22 @@ function upsertOrchestrationRun(run) {
   renderQuestions();
 }
 
-function questionDraftsFromCard(card) {
-  return [...card.querySelectorAll(".question-draft")].map((row) => ({
+function questionDraftsFromCard(card, run) {
+  const visibleDrafts = [...card.querySelectorAll(".question-draft")].map((row) => ({
     id: row.dataset.questionId,
     question: row.querySelector("textarea").value.trim(),
     source_excerpt: row.dataset.sourceExcerpt || "",
     review_status: row.dataset.reviewStatus || "pending",
   })).filter((item) => item.question);
+  const visibleIds = new Set(visibleDrafts.map((item) => item.id));
+  const hiddenRejected = run.questions.filter(
+    (item) => item.review_status === "rejected" && !visibleIds.has(item.id)
+  );
+  return [...visibleDrafts, ...hiddenRejected];
 }
 
 async function submitQuestionReview(run, card, row, action, buttons) {
-  const questions = questionDraftsFromCard(card);
+  const questions = questionDraftsFromCard(card, run);
   const questionId = row.dataset.questionId;
   if (!questions.some((item) => item.id === questionId)) {
     setStatus("Enter question text before reviewing it.", false);
@@ -1128,7 +1313,10 @@ async function submitQuestionReview(run, card, row, action, buttons) {
 
 function renderQuestions() {
   questionsListEl.innerHTML = "";
-  const visibleRuns = orchestrationRuns.filter((run) => run.status !== "ignored");
+  const hiddenRunStatuses = new Set(["ignored", "failed", "rejected"]);
+  const visibleRuns = orchestrationRuns.filter(
+    (run) => !hiddenRunStatuses.has(run.status)
+  );
   questionsEmptyEl.style.display = visibleRuns.length === 0 ? "block" : "none";
   questionsClearBtn.disabled = orchestrationRuns.length === 0;
 
@@ -1156,13 +1344,13 @@ function renderQuestions() {
     ].join("");
     card.appendChild(timings);
 
-    const source = document.createElement("div");
-    source.className = "question-source";
-    source.textContent = run.source_text;
-    card.appendChild(source);
-
     const editable = run.status === "awaiting_review";
-    run.questions.forEach((draft, index) => {
+    const visibleQuestions = run.questions.filter((draft) => {
+      const reviewStatus = draft.review_status || "pending";
+      if (run.status === "validated") return reviewStatus === "validated";
+      return reviewStatus !== "rejected";
+    });
+    visibleQuestions.forEach((draft, index) => {
       const reviewStatus = draft.review_status || "pending";
       const row = document.createElement("div");
       row.className = `question-draft ${reviewStatus}`;
@@ -1186,13 +1374,6 @@ function renderQuestions() {
       text.disabled = !editable || reviewStatus !== "pending";
       text.setAttribute("aria-label", `Question ${index + 1}`);
       row.appendChild(text);
-
-      if (draft.source_excerpt) {
-        const excerpt = document.createElement("p");
-        excerpt.className = "question-excerpt";
-        excerpt.textContent = `Source: “${draft.source_excerpt}”`;
-        row.appendChild(excerpt);
-      }
 
       if (editable && reviewStatus === "pending") {
         const feedback = document.createElement("textarea");
@@ -1226,7 +1407,9 @@ function renderQuestions() {
       noDraft.className = "question-excerpt";
       noDraft.textContent = run.status === "generating"
         ? "Question generation is running in the background."
-        : "No responsible question was generated. Add one manually for review.";
+        : run.status === "failed"
+          ? "Question generation failed. No question was produced."
+          : "No responsible question was generated. Add one manually for review.";
       card.appendChild(noDraft);
     }
 
@@ -1236,7 +1419,7 @@ function renderQuestions() {
       add.type = "button";
       add.textContent = "+ Add question";
       add.addEventListener("click", () => {
-        run.questions = questionDraftsFromCard(card);
+        run.questions = questionDraftsFromCard(card, run);
         run.questions.push({
           id: `manual-${Date.now()}`,
           question: "",
@@ -1306,12 +1489,14 @@ const expandedHistoryIds = new Set();
 
 function renderHistory() {
   historyListEl.innerHTML = "";
-  const sorted = [...capturedItems].sort((a, b) => b.ts - a.ts);
+  const sorted = capturedItems
+    .filter((item) => item.status !== "ignore")
+    .sort((a, b) => b.ts - a.ts);
   historyEmptyEl.style.display = sorted.length === 0 ? "block" : "none";
 
   for (const item of sorted) {
     const row = document.createElement("div");
-    row.className = "history-item";
+    row.className = `history-item ${item.status}`;
     const isExpanded = expandedHistoryIds.has(item.id);
     row.classList.toggle("expanded", isExpanded);
 
@@ -1328,6 +1513,18 @@ function renderHistory() {
     badge.className = `badge ${item.status}`;
     badge.textContent = item.status;
     metaRight.appendChild(badge);
+    if (item.status === "ready" && item.previouslyWait) {
+      const transitionBadge = document.createElement("span");
+      transitionBadge.className = "badge previously-wait";
+      transitionBadge.textContent = "Previously WAIT";
+      metaRight.appendChild(transitionBadge);
+    }
+    if (item.questionGenerationFailed) {
+      const failureBadge = document.createElement("span");
+      failureBadge.className = "badge generation-failed";
+      failureBadge.textContent = "Question generation failed";
+      metaRight.appendChild(failureBadge);
+    }
     meta.appendChild(metaRight);
     row.appendChild(meta);
 
@@ -1366,19 +1563,28 @@ function saveHistory() {
 // an accidental tab crash mid-session -- nothing reads it back at
 // bootstrap anymore.
 
-document.getElementById("history-export-btn").addEventListener("click", () => {
-  const lines = [...capturedItems]
-    .sort((a, b) => a.ts - b.ts)
-    .map((i) => `[${formatTimestamp(i.ts)}] (${i.status})\n${i.text}\n`);
-  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `liveqna-captures-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+document.getElementById("history-logs-btn").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/live-logs/pdf");
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `Log download failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    a.download = filenameMatch?.[1] || "LIVE-QA-LOGS.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus("Live Q&A logs downloaded as PDF.");
+  } catch (error) {
+    setStatus(`Could not download logs: ${error.message}`, false);
+  }
 });
 
 document.getElementById("history-clear-btn").addEventListener("click", () => {
@@ -1491,11 +1697,9 @@ function connect() {
         break;
       case "session_assessment_started":
         startPhaseIndicator("generation");
-        updateAutomaticCaptureDot(true);
         setStatus(`Automatic candidate ${msg.sequence} is being assessed.`);
         break;
       case "session_candidate":
-        updateAutomaticCaptureDot(false);
         recordAutomaticCandidate(msg);
         if (msg.decision === "ready" && msg.run_id) {
           activeGenerationRunIds.add(msg.run_id);
@@ -1509,7 +1713,6 @@ function connect() {
         }
         break;
       case "session_candidate_failed":
-        updateAutomaticCaptureDot(false);
         finishPhaseIndicator("generation");
         setStatus(`Automatic transcript assessment failed: ${msg.error}`, false);
         break;
@@ -1535,8 +1738,14 @@ function connect() {
           finishPhaseIndicator("generation");
         }
         const existing = orchestrationRuns.find((run) => run.run_id === msg.run_id);
-        if (existing) {
-          upsertOrchestrationRun({ ...existing, status: "failed", error: msg.error });
+        const failedRun = msg.run || existing;
+        if (failedRun) {
+          upsertOrchestrationRun({ ...failedRun, status: "failed", error: msg.error });
+        }
+        const historyItem = capturedItems.find((item) => item.runId === msg.run_id);
+        if (historyItem) {
+          historyItem.questionGenerationFailed = true;
+          renderCapturedList();
         }
         setStatus(`Question generation failed: ${msg.error}`, false);
         break;
@@ -1676,9 +1885,28 @@ function clearAllState() {
 }
 
 document.getElementById("clear-all-btn").addEventListener("click", async () => {
-  if (!window.confirm("Clear everything -- transcript, history, questions, and logging? This cannot be undone.")) return;
+  const warning = [
+    "Clear all will permanently delete:",
+    "",
+    "- the transcript currently displayed in this browser",
+    "- captured History stored by this browser",
+    "- all generated-question runs and their human review state",
+    "- pending file selections that have not been ingested",
+    "- messages in the Logging tab",
+    "- every Gate 2 inspection run in .cache/ingestion/runs",
+    "- every persistent Live Q&A log in .data/live-session-logs",
+    "",
+    "It will NOT delete projects, ingested documents or versions, database records, Qdrant vectors, or downloaded model caches.",
+    "",
+    "This cannot be undone. Continue?",
+  ].join("\n");
+  if (!window.confirm(warning)) return;
   try {
-    await clearQuestionsFromServer();
+    await requestJson("/api/clear-all", { method: "DELETE" });
+    for (const runId of activeGenerationRunIds) {
+      finishPhaseIndicator("generation");
+    }
+    activeGenerationRunIds.clear();
     clearAllState();
   } catch (e) {
     setStatus(`Clear all failed: ${e.message}`, false);
@@ -1725,7 +1953,6 @@ questionModelEl.addEventListener("input", () => {
 clearAllState();
 renderCapturedList();
 updateCaptureButtons();
-updateAutomaticCaptureDot(false);
 renderQuestions();
 renderIngestionSelections();
 loadIngestionLibrary();

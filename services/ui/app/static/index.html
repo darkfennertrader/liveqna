@@ -134,6 +134,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
   padding: 14px 16px; cursor: pointer; transition: border-color .15s;
 }
 .history-item:hover { border-color: var(--accent); }
+.history-item.ignore, .history-item.ignore:hover { border-color: var(--border); }
 .history-item .meta {
   display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
   font-size: 11px; color: var(--muted-2);
@@ -145,14 +146,16 @@ button.danger:hover { background: rgba(248,113,113,.1); }
 .history-item.expanded .snippet {
   -webkit-line-clamp: unset; display: block; white-space: pre-wrap; overflow: visible;
 }
-.history-item .meta-right { display: flex; align-items: center; gap: 8px; }
+.history-item .meta-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .history-item .badge {
   font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px;
   border-radius: 10px; flex-shrink: 0; font-weight: 700;
 }
 .badge.ready { background: rgba(74,222,128,.18); color: var(--success); }
 .badge.wait { background: rgba(251,191,36,.18); color: var(--warning); }
-.badge.ignore { background: rgba(148,163,184,.18); color: var(--muted); }
+.badge.previously-wait { background: rgba(251,191,36,.18); color: var(--warning); }
+.badge.generation-failed { background: #fca5a5; color: #000; }
+.badge.ignore { background: transparent; color: var(--muted-2); font-weight: 500; }
 #history-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
 #history-toolbar button { margin-top: 0; width: auto; padding: 7px 14px; }
 #history-empty { font-size: 13px; color: var(--muted-2); text-align: center; padding: 40px 0; }
@@ -182,11 +185,6 @@ button.danger:hover { background: rgba(248,113,113,.1); }
 }
 .run-status.validated { color: var(--success); background: rgba(74,222,128,.14); }
 .run-status.rejected, .run-status.failed { color: var(--danger); background: rgba(248,113,113,.14); }
-.question-source {
-  white-space: pre-wrap; font-size: 13px; line-height: 1.55; color: var(--muted);
-  background: var(--bg-elevated); border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm); padding: 11px 12px; margin-bottom: 14px;
-}
 .question-draft { border-left: 2px solid var(--accent); padding-left: 12px; margin: 12px 0; }
 .question-draft.validated { border-left-color: var(--success); }
 .question-draft.rejected { border-left-color: var(--danger); opacity: .72; }
@@ -212,6 +210,9 @@ button.danger:hover { background: rgba(248,113,113,.1); }
   padding: 16px; min-height: 0;
 }
 .ingestion-card h3 { margin: 0 0 12px; font-size: 14px; }
+.ingestion-project-row { display: flex; align-items: center; gap: 8px; }
+.ingestion-project-row select, .ingestion-project-row input { flex: 1; min-width: 0; }
+.ingestion-project-row button { width: auto; margin-top: 0; white-space: nowrap; }
 .ingestion-help { color: var(--muted-2); font-size: 11px; line-height: 1.5; margin: 6px 0 12px; }
 #ingestion-file-input { display: none; }
 #ingestion-file-list, #ingestion-library { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
@@ -224,12 +225,6 @@ button.danger:hover { background: rgba(248,113,113,.1); }
 .ingestion-document .ingestion-version { margin-top: 9px; background: var(--bg-elevated); }
 .ingestion-document-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ingestion-document-controls { display: flex; align-items: center; gap: 7px; }
-.ingestion-document-delete {
-  width: 28px; height: 28px; margin: 0; padding: 0; border: none;
-  color: var(--danger); background: transparent; font-size: 21px; line-height: 1;
-}
-.ingestion-document-delete:hover { background: rgba(248,113,113,.1); }
-.ingestion-document-delete:disabled { opacity: .45; cursor: wait; }
 .ingestion-file-head, .ingestion-version-head {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
 }
@@ -238,6 +233,28 @@ button.danger:hover { background: rgba(248,113,113,.1); }
 .ingestion-file textarea { min-height: 58px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .ingestion-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
 .ingestion-actions button { width: auto; margin: 0; padding: 6px 10px; font-size: 11px; }
+.ingestion-actions .action-accept {
+  color: #052e16; background: var(--success); border-color: var(--success);
+}
+.ingestion-actions .action-accept:hover { background: #86efac; }
+.ingestion-actions .action-accept:disabled,
+.ingestion-actions .action-accept:disabled:hover {
+  color: #052e16; background: var(--success); border-color: var(--success);
+  opacity: .48;
+}
+.ingestion-actions .action-resolve {
+  color: #422006; background: var(--warning); border-color: var(--warning);
+}
+.ingestion-actions .action-resolve:hover { background: #fde047; }
+.action-delete {
+  color: #450a0a; background: var(--danger); border-color: var(--danger);
+}
+.ingestion-actions .action-delete { margin-left: auto; }
+.action-delete:hover { background: #fca5a5; }
+.ingestion-actions .action-reingest {
+  color: #431407; background: #fb923c; border-color: #fb923c;
+}
+.ingestion-actions .action-reingest:hover { background: #fdba74; }
 .ingestion-status {
   flex-shrink: 0; border-radius: 999px; padding: 3px 8px; font-size: 9px;
   font-weight: 800; letter-spacing: .04em; color: var(--warning); background: rgba(251,191,36,.14);
@@ -338,8 +355,8 @@ button.danger:hover { background: rgba(248,113,113,.1); }
       <div id="toolbar-top">
         <h1>liveqna</h1>
         <div class="status-dots">
+          <div class="status-dot-group"><div id="ingestion-dot" class="dot green"></div> Ingestion</div>
           <div class="status-dot-group"><div id="conn-dot" class="dot"></div> Live transcript</div>
-          <div class="status-dot-group"><div id="auto-capture-dot" class="dot"></div> Automatic capture</div>
           <div class="status-dot-group">
             <div id="question-generation-dot" class="dot green"></div>
             Question generation <span id="question-generation-time" class="phase-time">ready</span>
@@ -380,34 +397,38 @@ button.danger:hover { background: rgba(248,113,113,.1); }
     </div>
 
     <div id="tabs">
-      <button class="tab-btn" id="tab-ingestion-btn" data-tab="ingestion">Ingestion</button>
-      <button class="tab-btn active" id="tab-live-btn" data-tab="live">Live transcript</button>
+      <button class="tab-btn active" id="tab-ingestion-btn" data-tab="ingestion">Ingestion</button>
+      <button class="tab-btn" id="tab-live-btn" data-tab="live">Live transcript</button>
       <button class="tab-btn" id="tab-history-btn" data-tab="history">History</button>
       <button class="tab-btn" id="tab-questions-btn" data-tab="questions">Questions</button>
       <button class="tab-btn" id="tab-logging-btn" data-tab="logging">Logging</button>
     </div>
 
 
-    <div class="tab-panel" id="tab-ingestion">
+    <div class="tab-panel active" id="tab-ingestion">
       <div class="ingestion-layout">
         <div class="ingestion-card">
           <h3>Upload documents</h3>
           <label for="ingestion-project-select">Project</label>
-          <select id="ingestion-project-select">
-            <option value="">Select project...</option>
-            <option value="__new__">+ Create new project</option>
-          </select>
-          <div id="ingestion-new-project-group" style="display:none;">
-            <label for="ingestion-new-project">New project name</label>
-            <input id="ingestion-new-project" type="text" maxlength="200" placeholder="Example: Client ABC" />
+          <div class="ingestion-project-row">
+            <select id="ingestion-project-select">
+              <option value="">Select project...</option>
+            </select>
+            <button id="ingestion-delete-project-btn" class="danger" disabled>Delete project</button>
           </div>
+          <label for="ingestion-new-project">New project name</label>
+          <div id="ingestion-new-project-group" class="ingestion-project-row">
+            <input id="ingestion-new-project" type="text" maxlength="200" placeholder="Example: Client ABC" />
+            <button id="ingestion-create-project-btn">Create project</button>
+          </div>
+          <p id="ingestion-project-gate" class="ingestion-help">Select or create a project before selecting source files.</p>
           <p class="ingestion-help">Select one or more TXT, Markdown, DOCX, PDF, PPTX, or XLSX files. Their formats are inferred from their extensions.</p>
           <input id="ingestion-file-input" type="file" multiple accept=".txt,.md,.markdown,.docx,.pdf,.pptx,.xlsx" />
-          <button id="ingestion-select-btn">Select files</button>
+          <button id="ingestion-select-btn" disabled>Select files</button>
           <div id="ingestion-file-list"></div>
           <p id="ingestion-selection-empty" class="ingestion-empty">No files selected.</p>
           <button id="ingestion-start-btn" class="primary" disabled>Start ingestion</button>
-          <p class="ingestion-help">Each file runs independently. You can continue using every other part of LiveQnA while normalization is running.</p>
+          <p class="ingestion-help">Each file runs independently. Live Q&amp;A cannot start until every ingestion job has finished.</p>
         </div>
         <div class="ingestion-card" style="display:flex; flex-direction:column;">
           <div class="ingestion-file-head" style="margin-bottom:12px;">
@@ -421,7 +442,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
     </div>
 
 
-    <div class="tab-panel active" id="tab-live">
+    <div class="tab-panel" id="tab-live">
       <div id="transcript"></div>
     </div>
 
@@ -429,7 +450,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
       <div id="history-toolbar">
         <span style="font-size:12px; color:var(--muted);">All captured dialogues from this session.</span>
         <div class="row" style="gap:8px;">
-          <button id="history-export-btn" style="width:auto;">Export all</button>
+          <button id="history-logs-btn" style="width:auto;">Download logs (PDF)</button>
           <button id="history-clear-btn" class="danger" style="width:auto;">Clear history</button>
         </div>
       </div>

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
+from time import perf_counter
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
 
-from .errors import RegistryConflictError
+from .errors import RegistryConflictError, RegistryNotFoundError
 from .extraction import ExtractionPipeline, NormalizedDocument
+from .extraction.models import SlideHumanResolution
+from .extraction.pptx_resolution import find_review_question, review_questions
 from .extraction.errors import ExtractionFailure
 from .extraction.pptx_report import build_pptx_llm_report
 from .qdrant import QdrantProbe
@@ -18,8 +22,10 @@ from .schemas import (
     DocumentDeletionResponse,
     DocumentVersionResponse,
     ExtractionRunResponse,
+    ProjectDeletionResponse,
 )
 from .storage import VersionStorage
+from .vision.base import SlideResolutionProvider, VisionProviderError
 
 
 logger = logging.getLogger("ingestion.service")
@@ -39,6 +45,8 @@ class RegistryService:
         storage: VersionStorage,
         approved_by: str,
         extraction: ExtractionPipeline,
+        resolution_provider: SlideResolutionProvider,
+        resolution_prompt_version: str,
         qdrant: QdrantProbe,
         qdrant_collection: str,
     ) -> None:
@@ -46,10 +54,14 @@ class RegistryService:
         self._storage = storage
         self._approved_by = approved_by
         self._extraction = extraction
+        self._resolution_provider = resolution_provider
+        self._resolution_prompt_version = resolution_prompt_version
         self._qdrant = qdrant
         self._qdrant_collection = qdrant_collection
         self._background_tasks: set[asyncio.Task] = set()
         self._deletion_tasks: dict[UUID, asyncio.Task] = {}
+        self._project_deletion_tasks: dict[UUID, asyncio.Task] = {}
+        self._review_locks: dict[UUID, asyncio.Lock] = {}
 
     @property
     def active_extraction_count(self) -> int:
@@ -137,6 +149,8 @@ class RegistryService:
             self.schedule_extraction(version_id)
 
     async def recover_pending_deletions(self) -> None:
+        for project_id in await self.repository.pending_project_deletions():
+            self._schedule_project_deletion(project_id)
         for document_id in await self.repository.pending_document_deletions():
             self._schedule_document_deletion(document_id)
 
@@ -158,6 +172,262 @@ class RegistryService:
                 "normalized output is missing from local storage"
             ) from exc
         return NormalizedDocument.model_validate(payload)
+
+    async def review_report(self, version_id: UUID) -> str:
+        version = await self.repository.get_version(version_id)
+        document = await self.normalized_document(version_id)
+        if document.source_format != "pptx":
+            warnings = document.quality.warnings or [
+                "No structured inconsistency questions were produced."
+            ]
+            return "\n".join(
+                [
+                    "# Document review report",
+                    "",
+                    f"Source: `{document.source_filename}`",
+                    f"Format: `{document.source_format}`",
+                    "",
+                    "## Extraction warnings",
+                    "",
+                    *[f"- {warning}" for warning in warnings],
+                    "",
+                ]
+            )
+        try:
+            return self._storage.read_pptx_llm_report(version.file_path)
+        except FileNotFoundError as exc:
+            raise RegistryConflictError(
+                "the PPTX review report is not available yet"
+            ) from exc
+
+    async def review_artifact(
+        self, version_id: UUID, artifact_path: str
+    ) -> Path:
+        version = await self.repository.get_version(version_id)
+        try:
+            return self._storage.review_artifact(
+                version.file_path, artifact_path
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise RegistryNotFoundError("review artifact not found") from exc
+
+    async def review_workflow(self, version_id: UUID) -> dict:
+        version = await self.repository.get_version(version_id)
+        document = await self.normalized_document(version_id)
+        groups = []
+        total = 0
+        applied = 0
+        for slide in document.slides:
+            questions = review_questions(slide)
+            if not questions:
+                continue
+            total += len(questions)
+            applied += sum(
+                1
+                for question in questions
+                if question["resolution"] is not None
+                and question["resolution"]["status"] == "APPLIED"
+            )
+            groups.append(
+                {
+                    "locator": {
+                        "kind": "slide",
+                        "number": slide.slide_number,
+                        "label": f"Slide {slide.slide_number}",
+                    },
+                    "title": slide.title or "Untitled",
+                    "artifact_path": slide.image_path,
+                    "questions": questions,
+                }
+            )
+        return {
+            "version_id": str(version_id),
+            "source_filename": version.source_filename,
+            "source_format": document.source_format,
+            "processing_status": version.processing_status.value,
+            "question_count": total,
+            "applied_count": applied,
+            "complete": total > 0 and applied == total,
+            "groups": groups,
+        }
+
+    async def resolve_review_question(
+        self, version_id: UUID, question_id: str, answer: str
+    ) -> dict:
+        cleaned_answer = answer.strip()
+        if not cleaned_answer:
+            raise RegistryConflictError("an answer is required")
+        lock = self._review_locks.setdefault(version_id, asyncio.Lock())
+        async with lock:
+            version = await self.repository.get_version(version_id)
+            document = await self.normalized_document(version_id)
+            slide, question = self._locate_question(document, question_id)
+            existing = question["resolution"]
+            if existing is not None and existing["status"] == "APPLIED":
+                raise RegistryConflictError(
+                    "this resolution has already been applied"
+                )
+            assert slide.review is not None
+            finding = slide.review.findings[question["finding_index"]]
+            try:
+                image_path = self._storage.review_artifact(
+                    version.file_path, slide.image_path
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                raise RegistryConflictError(
+                    "the rendered slide image is unavailable"
+                ) from exc
+            started = perf_counter()
+            try:
+                result = await asyncio.to_thread(
+                    self._resolution_provider.resolve_slide,
+                    image_path,
+                    slide_number=slide.slide_number,
+                    content_profile=document.content_profile
+                    or "general_document",
+                    native_markdown=slide.native_markdown,
+                    current_markdown=self._current_review_markdown(slide),
+                    finding=finding,
+                    question=question["question"],
+                    answer=cleaned_answer,
+                    prompt_version=self._resolution_prompt_version,
+                )
+            except VisionProviderError as exc:
+                raise RegistryConflictError(
+                    f"the resolution model failed: {exc}"
+                ) from exc
+            duration_ms = max(0, round((perf_counter() - started) * 1000))
+            response_hash = hashlib.sha256(
+                result.model_dump_json().encode("utf-8")
+            ).hexdigest()
+            resolution = SlideHumanResolution(
+                question_id=question_id,
+                finding_index=question["finding_index"],
+                question=question["question"],
+                answer=cleaned_answer,
+                resolved_markdown=result.resolved_markdown,
+                rationale=result.rationale,
+                remaining_uncertainty=result.remaining_uncertainty,
+                follow_up_question=result.follow_up_question,
+                provider=self._resolution_provider.name,
+                model=self._resolution_provider.model,
+                prompt_version=self._resolution_prompt_version,
+                response_hash=response_hash,
+                duration_ms=duration_ms,
+            )
+            updated_resolutions = [
+                item
+                for item in slide.human_resolutions
+                if item.question_id != question_id
+            ] + [resolution]
+            updated_slide = slide.model_copy(
+                update={"human_resolutions": updated_resolutions}
+            )
+            document = self._replace_slide(document, updated_slide)
+            await asyncio.to_thread(
+                self._persist_review_document, version.file_path, document
+            )
+        return await self.review_workflow(version_id)
+
+    async def apply_review_resolution(
+        self, version_id: UUID, question_id: str
+    ) -> dict:
+        lock = self._review_locks.setdefault(version_id, asyncio.Lock())
+        async with lock:
+            version = await self.repository.get_version(version_id)
+            document = await self.normalized_document(version_id)
+            slide, question = self._locate_question(document, question_id)
+            current = next(
+                (
+                    item
+                    for item in slide.human_resolutions
+                    if item.question_id == question_id
+                ),
+                None,
+            )
+            if current is None:
+                raise RegistryConflictError(
+                    "resolve the question before applying it"
+                )
+            if current.remaining_uncertainty:
+                raise RegistryConflictError(
+                    "the model still needs clarification; answer the follow-up first"
+                )
+            applied = current.model_copy(update={"status": "APPLIED"})
+            updated_resolutions = [
+                applied if item.question_id == question_id else item
+                for item in slide.human_resolutions
+            ]
+            updated_slide = slide.model_copy(
+                update={
+                    "human_resolutions": updated_resolutions,
+                    # Proposals are appended in generation order and each is
+                    # produced from the latest prior proposal. Keep the newest
+                    # cumulative proposal when applying the batch, regardless
+                    # of question display order.
+                    "combined_markdown": updated_resolutions[-1].resolved_markdown,
+                }
+            )
+            document = self._replace_slide(document, updated_slide)
+            complete = self._all_questions_applied(document)
+            await asyncio.to_thread(
+                self._persist_review_document, version.file_path, document
+            )
+            if complete:
+                await self.repository.complete_human_review(version_id)
+        return await self.review_workflow(version_id)
+
+    @staticmethod
+    def _locate_question(document: NormalizedDocument, question_id: str):
+        for slide in document.slides:
+            try:
+                return slide, find_review_question(slide, question_id)
+            except KeyError:
+                continue
+        raise RegistryNotFoundError(f"review question not found: {question_id}")
+
+    @staticmethod
+    def _replace_slide(document: NormalizedDocument, updated_slide):
+        return document.model_copy(
+            update={
+                "slides": [
+                    updated_slide
+                    if slide.slide_number == updated_slide.slide_number
+                    else slide
+                    for slide in document.slides
+                ]
+            }
+        )
+
+    @staticmethod
+    def _current_review_markdown(slide) -> str:
+        proposed = [
+            resolution.resolved_markdown
+            for resolution in slide.human_resolutions
+            if resolution.status == "PROPOSED"
+        ]
+        return proposed[-1] if proposed else slide.combined_markdown
+
+    @staticmethod
+    def _all_questions_applied(document: NormalizedDocument) -> bool:
+        questions = [
+            question
+            for slide in document.slides
+            for question in review_questions(slide)
+        ]
+        return bool(questions) and all(
+            question["resolution"] is not None
+            and question["resolution"]["status"] == "APPLIED"
+            for question in questions
+        )
+
+    def _persist_review_document(
+        self, source_path: str, document: NormalizedDocument
+    ) -> None:
+        self._storage.write_normalized(
+            source_path, document.model_dump(mode="json")
+        )
+        self._write_pptx_llm_report(source_path, document)
 
     async def _run_extraction(self, version_id: UUID) -> ExtractionRunResponse:
         source = await self.repository.extraction_source(version_id)
@@ -304,6 +574,61 @@ class RegistryService:
         result = await self.repository.mark_document_deleting(document_id)
         self._schedule_document_deletion(document_id)
         return result
+
+    async def delete_project(
+        self, project_id: UUID
+    ) -> ProjectDeletionResponse:
+        result = await self.repository.mark_project_deleting(project_id)
+        self._schedule_project_deletion(project_id)
+        return result
+
+    def _schedule_project_deletion(self, project_id: UUID) -> None:
+        existing = self._project_deletion_tasks.get(project_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(self._purge_project(project_id))
+        self._project_deletion_tasks[project_id] = task
+
+        def cleanup(completed: asyncio.Task) -> None:
+            self._project_deletion_tasks.pop(project_id, None)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.error(
+                    "project deletion task failed unexpectedly for %s: %s",
+                    project_id,
+                    error,
+                )
+
+        task.add_done_callback(cleanup)
+
+    async def _purge_project(self, project_id: UUID) -> None:
+        try:
+            plan = await self.repository.project_deletion_plan(project_id)
+            for document_id in plan["document_ids"]:
+                existing = self._deletion_tasks.get(document_id)
+                if existing is None or existing.done():
+                    self._schedule_document_deletion(document_id)
+                    existing = self._deletion_tasks[document_id]
+                await existing
+
+            final_plan = await self.repository.project_deletion_plan(project_id)
+            if final_plan["document_ids"]:
+                raise RegistryConflictError(
+                    "one or more project documents could not be deleted"
+                )
+            await self._storage.delete_project(project_id)
+            await self.repository.complete_project_deletion(project_id)
+            logger.info("project and all linked data deleted: %s", project_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("project deletion failed for %s", project_id)
+            await self.repository.fail_project_deletion(
+                project_id,
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def _schedule_document_deletion(self, document_id: UUID) -> None:
         existing = self._deletion_tasks.get(document_id)

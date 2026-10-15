@@ -5,6 +5,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _optional_temperature(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    value = float(raw)
+    if not 0 <= value <= 2:
+        raise ValueError(f"{name} must be between 0 and 2")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -12,6 +22,7 @@ class Settings:
     qdrant_collection: str
     document_storage_dir: Path
     model_cache_dir: Path
+    review_runs_cache_dir: Path
     migrations_dir: Path
     database_pool_min_size: int
     database_pool_max_size: int
@@ -27,6 +38,7 @@ class Settings:
     pptx_render_timeout_seconds: float
     vision_provider: str
     vision_model: str
+    vision_temperature: float | None
     vision_detail: str
     vision_prompt_version: str
     vision_timeout_seconds: float
@@ -35,11 +47,20 @@ class Settings:
     vision_max_concurrency: int
     review_provider: str
     review_model: str
+    review_temperature: float | None
     review_detail: str
     review_prompt_version: str
     review_timeout_seconds: float
     review_max_retries: int
     review_max_output_tokens: int
+    resolver_provider: str
+    resolver_model: str
+    resolver_temperature: float | None
+    resolver_detail: str
+    resolver_prompt_version: str
+    resolver_timeout_seconds: float
+    resolver_max_retries: int
+    resolver_max_output_tokens: int
     openai_api_key: str = field(repr=False)
     ollama_base_url: str
 
@@ -63,23 +84,38 @@ class Settings:
                 "INGESTION_VISION_DETAIL must be low, high, original, or auto"
             )
         review_provider = os.environ.get(
-            "INGESTION_REVIEW_PROVIDER", vision_provider
+            "INGESTION_JUDGE_PROVIDER", ""
         ).strip().lower()
         if review_provider not in {"openai", "ollama"}:
             raise ValueError(
-                "INGESTION_REVIEW_PROVIDER must be 'openai' or 'ollama'"
+                "INGESTION_JUDGE_PROVIDER must be 'openai' or 'ollama'"
             )
-        review_model = os.environ.get(
-            "INGESTION_REVIEW_MODEL", vision_model
-        ).strip()
+        review_model = os.environ.get("INGESTION_JUDGE_MODEL", "").strip()
         if not review_model:
-            raise ValueError("INGESTION_REVIEW_MODEL must not be empty")
+            raise ValueError("INGESTION_JUDGE_MODEL must not be empty")
         review_detail = os.environ.get(
-            "INGESTION_REVIEW_DETAIL", vision_detail
+            "INGESTION_JUDGE_DETAIL", "high"
         ).strip().lower()
         if review_detail not in {"low", "high", "original", "auto"}:
             raise ValueError(
-                "INGESTION_REVIEW_DETAIL must be low, high, original, or auto"
+                "INGESTION_JUDGE_DETAIL must be low, high, original, or auto"
+            )
+        resolver_provider = os.environ.get(
+            "INGESTION_RESOLVER_PROVIDER", ""
+        ).strip().lower()
+        if resolver_provider not in {"openai", "ollama"}:
+            raise ValueError(
+                "INGESTION_RESOLVER_PROVIDER must be 'openai' or 'ollama'"
+            )
+        resolver_model = os.environ.get("INGESTION_RESOLVER_MODEL", "").strip()
+        if not resolver_model:
+            raise ValueError("INGESTION_RESOLVER_MODEL must not be empty")
+        resolver_detail = os.environ.get(
+            "INGESTION_RESOLVER_DETAIL", "high"
+        ).strip().lower()
+        if resolver_detail not in {"low", "high", "original", "auto"}:
+            raise ValueError(
+                "INGESTION_RESOLVER_DETAIL must be low, high, original, or auto"
             )
         settings = cls(
             database_url=os.environ.get(
@@ -98,6 +134,12 @@ class Settings:
             ),
             model_cache_dir=Path(
                 os.environ.get("INGESTION_MODEL_CACHE_DIR", "/models")
+            ),
+            review_runs_cache_dir=Path(
+                os.environ.get(
+                    "INGESTION_REVIEW_RUNS_CACHE_DIR",
+                    "/cache/ingestion/runs",
+                )
             ),
             migrations_dir=Path(
                 os.environ.get(
@@ -148,6 +190,9 @@ class Settings:
             ),
             vision_provider=vision_provider,
             vision_model=vision_model,
+            vision_temperature=_optional_temperature(
+                "INGESTION_VISION_TEMPERATURE"
+            ),
             vision_detail=vision_detail,
             vision_prompt_version=os.environ.get(
                 "INGESTION_VISION_PROMPT_VERSION", "pptx-slide-v4"
@@ -167,25 +212,42 @@ class Settings:
             ),
             review_provider=review_provider,
             review_model=review_model,
+            review_temperature=_optional_temperature(
+                "INGESTION_JUDGE_TEMPERATURE"
+            ),
             review_detail=review_detail,
             review_prompt_version=os.environ.get(
-                "INGESTION_REVIEW_PROMPT_VERSION", "pptx-slide-review-v1"
+                "INGESTION_JUDGE_PROMPT_VERSION", "pptx-slide-review-v1"
             ).strip()
             or "pptx-slide-review-v1",
             review_timeout_seconds=float(
-                os.environ.get(
-                    "INGESTION_REVIEW_TIMEOUT_SECONDS",
-                    os.environ.get("INGESTION_VISION_TIMEOUT_SECONDS", "120"),
-                )
+                os.environ.get("INGESTION_JUDGE_TIMEOUT_SECONDS", "120")
             ),
             review_max_retries=int(
-                os.environ.get(
-                    "INGESTION_REVIEW_MAX_RETRIES",
-                    os.environ.get("INGESTION_VISION_MAX_RETRIES", "1"),
-                )
+                os.environ.get("INGESTION_JUDGE_MAX_RETRIES", "1")
             ),
             review_max_output_tokens=int(
-                os.environ.get("INGESTION_REVIEW_MAX_OUTPUT_TOKENS", "2500")
+                os.environ.get("INGESTION_JUDGE_MAX_OUTPUT_TOKENS", "2500")
+            ),
+            resolver_provider=resolver_provider,
+            resolver_model=resolver_model,
+            resolver_temperature=_optional_temperature(
+                "INGESTION_RESOLVER_TEMPERATURE"
+            ),
+            resolver_detail=resolver_detail,
+            resolver_prompt_version=os.environ.get(
+                "INGESTION_RESOLVER_PROMPT_VERSION",
+                "pptx-human-resolution-v1",
+            ).strip()
+            or "pptx-human-resolution-v1",
+            resolver_timeout_seconds=float(
+                os.environ.get("INGESTION_RESOLVER_TIMEOUT_SECONDS", "120")
+            ),
+            resolver_max_retries=int(
+                os.environ.get("INGESTION_RESOLVER_MAX_RETRIES", "1")
+            ),
+            resolver_max_output_tokens=int(
+                os.environ.get("INGESTION_RESOLVER_MAX_OUTPUT_TOKENS", "3000")
             ),
             openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
             ollama_base_url=os.environ.get(
@@ -202,10 +264,15 @@ class Settings:
             )
         if settings.review_max_output_tokens <= 0:
             raise ValueError(
-                "INGESTION_REVIEW_MAX_OUTPUT_TOKENS must be positive"
+                "INGESTION_JUDGE_MAX_OUTPUT_TOKENS must be positive"
+            )
+        if settings.resolver_max_output_tokens <= 0:
+            raise ValueError(
+                "INGESTION_RESOLVER_MAX_OUTPUT_TOKENS must be positive"
             )
         return settings
 
     def prepare_directories(self) -> None:
         self.document_storage_dir.mkdir(parents=True, exist_ok=True)
         self.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.review_runs_cache_dir.mkdir(parents=True, exist_ok=True)

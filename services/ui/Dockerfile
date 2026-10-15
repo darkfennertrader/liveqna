@@ -4,6 +4,7 @@ FROM python:3.13-slim
 # videos (duration probing + exact-range extraction to 16kHz mono PCM).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

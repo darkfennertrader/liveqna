@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 import httpx
 
@@ -181,8 +182,16 @@ async def unload_ingestion_models() -> dict:
     return await _ingestion_request("POST", "/runtime/unload-models")
 
 
+async def clear_ingestion_review_runs_cache() -> dict:
+    return await _ingestion_request("DELETE", "/review-runs-cache")
+
+
 async def create_ingestion_project(name: str) -> dict:
     return await _ingestion_request("POST", "/projects", payload={"name": name})
+
+
+async def delete_ingestion_project(project_id: str) -> dict:
+    return await _ingestion_request("DELETE", f"/projects/{project_id}")
 
 
 async def list_ingestion_documents(project_id: str) -> list[dict]:
@@ -252,10 +261,71 @@ async def get_normalized_document(version_id: str) -> dict:
     return await _ingestion_request("GET", f"/versions/{version_id}/normalized")
 
 
+async def get_ingestion_review_report(version_id: str) -> str:
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{INGESTION_URL}/versions/{version_id}/review-report"
+        )
+    _raise_ingestion_error(response)
+    return response.text
+
+
+async def get_ingestion_review_workflow(version_id: str) -> dict:
+    return await _ingestion_request(
+        "GET", f"/versions/{version_id}/review-workflow"
+    )
+
+
+async def resolve_ingestion_review_question(
+    version_id: str, question_id: str, answer: str
+) -> dict:
+    return await _ingestion_request(
+        "POST",
+        f"/versions/{version_id}/review-questions/{question_id}/resolve",
+        payload={"answer": answer},
+        timeout=180,
+    )
+
+
+async def apply_ingestion_review_resolution(
+    version_id: str, question_id: str
+) -> dict:
+    return await _ingestion_request(
+        "POST",
+        f"/versions/{version_id}/review-questions/{question_id}/apply",
+    )
+
+
+async def get_ingestion_review_artifact(
+    version_id: str, artifact_path: str
+) -> tuple[bytes, str]:
+    encoded_path = quote(artifact_path, safe="/")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{INGESTION_URL}/versions/{version_id}"
+            f"/review-artifacts/{encoded_path}"
+        )
+    _raise_ingestion_error(response)
+    return response.content, response.headers.get("content-type", "image/png")
+
+
 async def approve_ingestion_version(version_id: str) -> dict:
     return await _ingestion_request("POST", f"/versions/{version_id}/approve")
 
 
 async def delete_ingestion_draft(version_id: str) -> dict:
     return await _ingestion_request("DELETE", f"/versions/{version_id}")
+
+
+def _raise_ingestion_error(response: httpx.Response) -> None:
+    if not response.is_error:
+        return
+    try:
+        body = response.json()
+        detail = body.get("detail") or body.get("error") or response.text
+    except ValueError:
+        detail = response.text
+    raise UpstreamServiceError(
+        str(detail or "ingestion request failed"), response.status_code
+    )
 

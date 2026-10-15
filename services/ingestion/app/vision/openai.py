@@ -10,6 +10,8 @@ from pydantic import BaseModel
 
 from ..extraction.models import (
     SlideReconciliation,
+    SlideResolutionResult,
+    SlideReviewDecisionFinding,
     SlideReviewResult,
     SlideVisionResult,
 )
@@ -19,7 +21,9 @@ from .prompt import (
     SYSTEM_INSTRUCTIONS,
     page_prompt,
     REVIEW_SYSTEM_INSTRUCTIONS,
+    RESOLUTION_SYSTEM_INSTRUCTIONS,
     review_prompt,
+    resolution_prompt,
     slide_prompt,
 )
 
@@ -32,6 +36,7 @@ class OpenAIVisionProvider:
         *,
         api_key: str,
         model: str,
+        temperature: float | None = None,
         detail: str = "high",
         timeout_seconds: float = 120.0,
         max_retries: int = 1,
@@ -39,6 +44,7 @@ class OpenAIVisionProvider:
         client: Any | None = None,
     ) -> None:
         self.model = model
+        self._temperature = temperature
         self._api_key = api_key
         self._detail = detail
         self._timeout_seconds = timeout_seconds
@@ -122,6 +128,35 @@ class OpenAIVisionProvider:
             result_type=SlideReviewResult,
         )
 
+    def resolve_slide(
+        self,
+        image_path: Path,
+        *,
+        slide_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult:
+        del prompt_version
+        return self._analyze(
+            image_path,
+            instructions=RESOLUTION_SYSTEM_INSTRUCTIONS,
+            prompt=resolution_prompt(
+                slide_number=slide_number,
+                content_profile=content_profile,
+                native_markdown=native_markdown,
+                current_markdown=current_markdown,
+                finding=finding,
+                question=question,
+                answer=answer,
+            ),
+            result_type=SlideResolutionResult,
+        )
+
     def _analyze(
         self,
         image_path: Path,
@@ -142,10 +177,10 @@ class OpenAIVisionProvider:
             )
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         try:
-            response = self._client.responses.parse(
-                model=self.model,
-                instructions=instructions,
-                input=[
+            request: dict[str, Any] = {
+                "model": self.model,
+                "instructions": instructions,
+                "input": [
                     {
                         "role": "user",
                         "content": [
@@ -161,10 +196,13 @@ class OpenAIVisionProvider:
                         ],
                     }
                 ],
-                text_format=result_type,
-                max_output_tokens=self._max_output_tokens,
-                store=False,
-            )
+                "text_format": result_type,
+                "max_output_tokens": self._max_output_tokens,
+                "store": False,
+            }
+            if self._temperature is not None:
+                request["temperature"] = self._temperature
+            response = self._client.responses.parse(**request)
         except Exception as exc:
             raise VisionProviderError(
                 f"OpenAI vision request failed: {type(exc).__name__}"

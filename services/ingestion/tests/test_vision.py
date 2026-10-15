@@ -8,6 +8,8 @@ import httpx
 
 from app.extraction.models import (
     SlideReconciliation,
+    SlideResolutionResult,
+    SlideReviewDecisionFinding,
     SlideReviewFinding,
     SlideReviewResult,
     SlideVisionResult,
@@ -41,6 +43,14 @@ def review_result() -> SlideReviewResult:
     )
 
 
+def resolution_result() -> SlideResolutionResult:
+    return SlideResolutionResult(
+        resolved_markdown="# Native value 42\n\nHuman clarification: approved.",
+        rationale="The human clarified the ambiguous annotation.",
+        remaining_uncertainty=False,
+    )
+
+
 def test_prompt_forbids_guessing_obscured_diagram_text() -> None:
     normalized_prompt = " ".join(SYSTEM_INSTRUCTIONS.split())
     assert "Never reconstruct text that is covered" in normalized_prompt
@@ -63,6 +73,7 @@ def test_openai_provider_sends_png_and_uses_structured_output(
     provider = OpenAIVisionProvider(
         api_key="test",
         model="test-model",
+        temperature=0.2,
         client=SimpleNamespace(responses=Responses()),
     )
 
@@ -93,6 +104,7 @@ def test_openai_provider_sends_png_and_uses_structured_output(
     assert image_input["image_url"].startswith("data:image/png;base64,")
     assert image_input["detail"] == "high"
     assert captured["store"] is False
+    assert captured["temperature"] == 0.2
 
 
 def test_openai_provider_review_call_uses_native_and_reconciliation(
@@ -129,6 +141,48 @@ def test_openai_provider_review_call_uses_native_and_reconciliation(
     assert "authoritative" in captured["instructions"]
 
 
+def test_openai_provider_resolves_one_finding_from_human_answer(
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=resolution_result())
+
+    image = tmp_path / "slide.png"
+    image.write_bytes(b"png")
+    provider = OpenAIVisionProvider(
+        api_key="test",
+        model="resolver-model",
+        client=SimpleNamespace(responses=Responses()),
+    )
+    result = provider.resolve_slide(
+        image,
+        slide_number=6,
+        content_profile="architecture",
+        native_markdown="# Native value 42",
+        current_markdown="# Native value 42",
+        finding=SlideReviewDecisionFinding(
+            category="PARTIAL_OR_UNCERTAIN",
+            severity="MEDIUM",
+            source="judge",
+            description="The red annotation is unclear.",
+            evidence="A numbered red circle is visible.",
+        ),
+        question="What does the red annotation mean?",
+        answer="It marks the approved control.",
+        prompt_version="pptx-human-resolution-v1",
+    )
+
+    assert result.remaining_uncertainty is False
+    assert captured["text_format"] is SlideResolutionResult
+    prompt = captured["input"][0]["content"][0]["text"]
+    assert "It marks the approved control" in prompt
+    assert "Native value 42" in prompt
+
+
 def test_openai_provider_uses_pdf_page_prompt(tmp_path: Path) -> None:
     captured = {}
 
@@ -157,6 +211,7 @@ def test_openai_provider_uses_pdf_page_prompt(tmp_path: Path) -> None:
     assert "PDF page number: 7" in prompt
     assert "Native PDF extraction" in prompt
     assert "Do not infer speaker attribution" in captured["instructions"]
+    assert "temperature" not in captured
 
 
 def test_ollama_provider_sends_image_and_json_schema(tmp_path: Path) -> None:
@@ -182,7 +237,10 @@ def test_ollama_provider_sends_image_and_json_schema(tmp_path: Path) -> None:
         transport=httpx.MockTransport(handler),
     )
     provider = OllamaVisionProvider(
-        model="local-vision", base_url="http://ollama:11434", client=client
+        model="local-vision",
+        temperature=0.3,
+        base_url="http://ollama:11434",
+        client=client,
     )
 
     result = provider.analyze_slide(
@@ -196,5 +254,6 @@ def test_ollama_provider_sends_image_and_json_schema(tmp_path: Path) -> None:
 
     assert result.visual_description == "A component diagram."
     assert captured["stream"] is False
+    assert captured["options"]["temperature"] == 0.3
     assert captured["messages"][1]["images"]
     assert captured["format"]["additionalProperties"] is False

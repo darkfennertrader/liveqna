@@ -29,7 +29,7 @@ from app.settings import Settings
 
 
 SUPPORTED_SUFFIXES = {".docx", ".md", ".markdown", ".pdf", ".pptx", ".txt", ".xlsx"}
-REVIEW_TIMEZONE = "Europe/Rome"
+DEFAULT_GATE2_TIMEZONE = "Europe/Rome"
 PRINT_CSS = Path(__file__).resolve().parents[1] / "docs" / "gate-2-print.css"
 SEVERITY_RANK = {
     "NONE": 0,
@@ -489,7 +489,9 @@ def build_package(
     financial_evidence: Path,
 ) -> dict:
     settings = Settings.from_environment()
-    timezone_name = os.environ.get("INGESTION_REVIEW_TIMEZONE", REVIEW_TIMEZONE)
+    timezone_name = os.environ.get(
+        "INGESTION_GATE2_TIMEZONE", DEFAULT_GATE2_TIMEZONE
+    )
     timezone = ZoneInfo(timezone_name)
     timestamp = datetime.now(timezone)
     created_at = timestamp.isoformat(timespec="seconds")

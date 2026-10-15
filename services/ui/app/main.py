@@ -27,13 +27,15 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import proxy
 from .config_store import ConfigStore
+from .live_logs import LiveLogNotFoundError, LiveSessionLogStore
 from .live_session import LiveSessionConfig, LiveSessionManager, LiveSessionStateError
+from .review_report import render_review_report
 
 
 logging.basicConfig(level=logging.INFO)
@@ -77,12 +79,17 @@ INGESTION_DOCUMENT_DISPLAY_ROOT = Path(
         "/home/ray/projects/liveqna/.data/ingestion/documents",
     )
 )
+LIVE_LOGS_DIR = Path(
+    os.environ.get("LIVE_LOGS_DIR", "/data/live-session-logs")
+)
+LIVE_LOGS_TIMEZONE = os.environ.get("LIVE_LOGS_TIMEZONE", "Europe/Rome")
 
 browser_clients: set[WebSocket] = set()
 _transcript_relay_task: asyncio.Task | None = None
 _level_relay_task: asyncio.Task | None = None
 _orchestration_watch_tasks: dict[str, asyncio.Task] = {}
 _live_session_manager: LiveSessionManager | None = None
+_live_log_store: LiveSessionLogStore | None = None
 _runtime_lock = asyncio.Lock()
 # STT eagerly preloads the configured Live Q&A backend at service startup.
 _live_models_loaded = True
@@ -99,6 +106,12 @@ async def _broadcast_to_browsers(payload: dict) -> None:
         browser_clients.discard(client)
 
 
+async def _emit_live_session_event(payload: dict) -> None:
+    if _live_log_store is not None:
+        await asyncio.to_thread(_live_log_store.record_event, payload)
+    await _broadcast_to_browsers(payload)
+
+
 async def _watch_orchestration_run(run_id: str) -> None:
     try:
         while True:
@@ -112,11 +125,28 @@ async def _watch_orchestration_run(run_id: str) -> None:
             if status["status"] in {"generating", "supervising"}:
                 continue
             if status["status"] == "failed":
+                failed_run = None
+                try:
+                    failed_run = await proxy.get_orchestration_run(run_id)
+                except proxy.UpstreamServiceError:
+                    pass
+                if _live_log_store is not None:
+                    await asyncio.to_thread(
+                        _live_log_store.attach_questions,
+                        failed_run or {
+                            "run_id": run_id,
+                            "status": "failed",
+                            "error": status.get("error")
+                            or "question generation failed",
+                            "questions": [],
+                        },
+                    )
                 await _broadcast_to_browsers(
                     {
                         "kind": "orchestration_run_failed",
                         "run_id": run_id,
                         "error": status.get("error") or "question generation failed",
+                        "run": failed_run,
                     }
                 )
                 return
@@ -124,6 +154,8 @@ async def _watch_orchestration_run(run_id: str) -> None:
                 run = await proxy.get_orchestration_run(run_id)
             except proxy.UpstreamServiceError:
                 continue
+            if _live_log_store is not None:
+                await asyncio.to_thread(_live_log_store.attach_questions, run)
             await _broadcast_to_browsers(
                 {"kind": "orchestration_run", "run": run}
             )
@@ -215,11 +247,14 @@ async def _relay_levels_forever() -> None:
 @app.on_event("startup")
 async def _startup() -> None:
     global _transcript_relay_task, _level_relay_task, _live_models_loaded
-    global _live_session_manager
+    global _live_session_manager, _live_log_store
+    _live_log_store = LiveSessionLogStore(
+        LIVE_LOGS_DIR, timezone_name=LIVE_LOGS_TIMEZONE
+    )
     _live_session_manager = LiveSessionManager(
         config=LiveSessionConfig.from_env(),
         assess_candidate=_submit_automatic_candidate,
-        emit_event=_broadcast_to_browsers,
+        emit_event=_emit_live_session_event,
         end_session_memory=_end_orchestration_session,
     )
     _transcript_relay_task = asyncio.create_task(_relay_transcripts_forever())
@@ -367,6 +402,10 @@ class StartLiveRequest(BaseModel):
     question_model: AgentModelSelection
 
 
+class IngestionProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class QuestionDraft(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     question: str = Field(min_length=1, max_length=2_000)
@@ -379,6 +418,10 @@ class ReviewRequest(BaseModel):
     question_id: str = Field(min_length=1, max_length=100)
     questions: list[QuestionDraft] = Field(default_factory=list, max_length=20)
     feedback: str = Field(default="", max_length=2_000)
+
+
+class IngestionReviewAnswer(BaseModel):
+    answer: str = Field(min_length=1, max_length=10_000)
 
 
 def _raise_upstream(exc: proxy.UpstreamServiceError) -> None:
@@ -417,16 +460,24 @@ async def runtime_status():
 
 @app.post("/api/runtime/start-ingestion")
 async def start_ingestion_runtime():
-    """Prepare GPU runtime for ingestion; remote-only ingestion stays parallel."""
+    """Prepare ingestion only when Live Q&A is completely inactive."""
     global _live_models_loaded
     async with _runtime_lock:
         try:
+            if (
+                _live_session_manager is not None
+                and _live_session_manager.state != "idle"
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="end Live Q&A before starting document ingestion",
+                )
             ingestion = await proxy.ingestion_runtime_status()
             if not ingestion.get("uses_local_gpu"):
                 return {
                     "status": "ready",
-                    "mode": "parallel",
-                    "detail": "remote-only ingestion; Live Q&A remains loaded",
+                    "mode": "remote_ingestion",
+                    "detail": "remote-only ingestion; Live Q&A remains unavailable until ingestion finishes",
                 }
 
             orchestration = await proxy.orchestrator_runtime_status()
@@ -463,12 +514,12 @@ async def start_live_runtime(req: StartLiveRequest):
     async with _runtime_lock:
         try:
             ingestion = await proxy.ingestion_runtime_status()
+            if ingestion.get("active_extraction_count", 0):
+                raise HTTPException(
+                    status_code=409,
+                    detail="wait for document ingestion to finish before starting Live Q&A",
+                )
             if ingestion.get("uses_local_gpu"):
-                if ingestion.get("active_extraction_count", 0):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="wait for local-model document ingestion to finish",
-                    )
                 await proxy.unload_ingestion_models()
 
             if _live_models_loaded:
@@ -490,6 +541,13 @@ async def start_live_runtime(req: StartLiveRequest):
                     "question_model": req.question_model.model_dump(),
                 }
             )
+            if _live_log_store is not None:
+                await asyncio.to_thread(
+                    _live_log_store.start_session,
+                    session["session_id"],
+                    project_id=req.project_id,
+                    project_name=req.project_name,
+                )
             return {
                 "status": "ready",
                 "mode": "live",
@@ -530,33 +588,6 @@ async def end_live_runtime():
             raise HTTPException(
                 status_code=502, detail=f"ending Live Q&A failed: {exc}"
             ) from exc
-
-
-async def _find_or_create_ingestion_project(name: str) -> dict:
-    projects = await proxy.list_ingestion_projects()
-    existing = next(
-        (project for project in projects if project["name"].casefold() == name.casefold()),
-        None,
-    )
-    if existing is not None:
-        return existing
-    try:
-        return await proxy.create_ingestion_project(name)
-    except proxy.UpstreamServiceError as exc:
-        if exc.status_code != 409:
-            raise
-        projects = await proxy.list_ingestion_projects()
-        existing = next(
-            (
-                project
-                for project in projects
-                if project["name"].casefold() == name.casefold()
-            ),
-            None,
-        )
-        if existing is None:
-            raise
-        return existing
 
 
 async def _find_or_create_ingestion_document(
@@ -633,6 +664,41 @@ async def clear_orchestration_runs():
         _raise_upstream(exc)
 
 
+@app.delete("/api/clear-all")
+async def clear_all_durable_ui_state():
+    """Clear review artifacts and question runs, but retain ingested data."""
+    try:
+        if (
+            _live_session_manager is not None
+            and _live_session_manager.state != "idle"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="end Live Q&A before using Clear all",
+            )
+        ingestion = await proxy.ingestion_runtime_status()
+        if ingestion.get("active_extraction_count", 0):
+            raise HTTPException(
+                status_code=409,
+                detail="wait for document ingestion to finish before using Clear all",
+            )
+        review_cache = await proxy.clear_ingestion_review_runs_cache()
+        question_runs = await proxy.clear_orchestration_runs()
+        live_logs_removed = (
+            await asyncio.to_thread(_live_log_store.clear)
+            if _live_log_store is not None
+            else 0
+        )
+        return {
+            "status": "cleared",
+            "review_cache": review_cache,
+            "question_runs": question_runs,
+            "live_logs_removed": live_logs_removed,
+        }
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
 @app.get("/api/orchestrator/runs/{run_id}")
 async def orchestration_run(run_id: str):
     try:
@@ -647,9 +713,26 @@ async def review_orchestration_run(run_id: str, req: ReviewRequest):
         result = await proxy.review_orchestration_run(run_id, req.model_dump())
         if result.get("accepted"):
             _schedule_orchestration_watch(run_id)
+        elif _live_log_store is not None and result.get("run_id"):
+            await asyncio.to_thread(_live_log_store.attach_questions, result)
         return result
     except proxy.UpstreamServiceError as exc:
         _raise_upstream(exc)
+
+
+@app.get("/api/live-logs/pdf")
+async def download_live_logs_pdf() -> FileResponse:
+    if _live_log_store is None:
+        raise HTTPException(status_code=503, detail="live logs are unavailable")
+    try:
+        pdf_path = await asyncio.to_thread(_live_log_store.combined_pdf)
+    except LiveLogNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=_live_log_store.download_filename(),
+    )
 
 
 # --- document ingestion ----------------------------------------------------
@@ -661,10 +744,31 @@ async def ingestion_projects():
     except proxy.UpstreamServiceError as exc:
         _raise_upstream(exc)
 
+
+@app.post("/api/ingestion/projects", status_code=201)
+async def create_ingestion_project(req: IngestionProjectCreateRequest):
+    try:
+        return await proxy.create_ingestion_project(req.name.strip())
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.delete("/api/ingestion/projects/{project_id}", status_code=202)
+async def delete_ingestion_project(project_id: str):
+    if _live_session_manager is not None and _live_session_manager.state != "idle":
+        raise HTTPException(
+            status_code=409,
+            detail="End Live Q&A before deleting a project.",
+        )
+    try:
+        return await proxy.delete_ingestion_project(project_id)
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
 @app.post("/api/ingestion/upload")
 async def upload_for_ingestion(
     file: UploadFile = File(...),
-    project_name: str = Form("LiveQnA"),
+    project_id: str = Form(...),
     content_profile: str = Form("general_document"),
     retrieval_metadata: str = Form("{}"),
 ):
@@ -682,26 +786,48 @@ async def upload_for_ingestion(
             status_code=400, detail="retrieval metadata must be a JSON object"
         )
 
-    clean_project = project_name.strip() or "LiveQnA"
     clean_profile = content_profile.strip().lower() or "general_document"
     version_label = datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
     try:
-        project = await _find_or_create_ingestion_project(clean_project)
-        document = await _find_or_create_ingestion_document(
-            str(project["id"]), filename, clean_profile
-        )
-        version = await proxy.upload_ingestion_version(
-            str(document["id"]),
-            version_label=version_label,
-            content_profile=clean_profile,
-            retrieval_metadata=json.dumps(parsed_metadata),
-            filename=filename,
-            content_type=file.content_type or "application/octet-stream",
-            file_object=file.file,
-        )
-        return {"project": project, "document": document, "version": version}
+        async with _runtime_lock:
+            if (
+                _live_session_manager is not None
+                and _live_session_manager.state != "idle"
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="end Live Q&A before uploading documents",
+                )
+            projects = await proxy.list_ingestion_projects()
+            project = next(
+                (
+                    candidate
+                    for candidate in projects
+                    if str(candidate["id"]) == project_id
+                    and candidate.get("deletion_status") == "ACTIVE"
+                ),
+                None,
+            )
+            if project is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Select an active project before uploading documents.",
+                )
+            document = await _find_or_create_ingestion_document(
+                project_id, filename, clean_profile
+            )
+            version = await proxy.upload_ingestion_version(
+                str(document["id"]),
+                version_label=version_label,
+                content_profile=clean_profile,
+                retrieval_metadata=json.dumps(parsed_metadata),
+                filename=filename,
+                content_type=file.content_type or "application/octet-stream",
+                file_object=file.file,
+            )
+            return {"project": project, "document": document, "version": version}
     except proxy.UpstreamServiceError as exc:
         _raise_upstream(exc)
     finally:
@@ -760,12 +886,95 @@ async def ingestion_normalized_document(version_id: str):
         _raise_upstream(exc)
 
 
-@app.post("/api/ingestion/versions/{version_id}/reingest", status_code=202)
-async def reingest_version(version_id: str):
+@app.get(
+    "/api/ingestion/versions/{version_id}/review-report",
+    response_class=HTMLResponse,
+)
+async def ingestion_review_report(version_id: str) -> HTMLResponse:
     try:
-        return await proxy.reingest_version(version_id)
+        source = await proxy.get_ingestion_review_report(version_id)
+        response = HTMLResponse(render_review_report(version_id, source))
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; img-src 'self'; script-src 'self'; "
+            "style-src 'unsafe-inline'; connect-src 'self'; "
+            "base-uri 'none'; frame-ancestors 'self'"
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except proxy.UpstreamServiceError as exc:
         _raise_upstream(exc)
+
+
+@app.get("/api/ingestion/versions/{version_id}/review-workflow")
+async def ingestion_review_workflow(version_id: str):
+    try:
+        return await proxy.get_ingestion_review_workflow(version_id)
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.post(
+    "/api/ingestion/versions/{version_id}/review-questions/{question_id}/resolve"
+)
+async def resolve_ingestion_review_question(
+    version_id: str, question_id: str, payload: IngestionReviewAnswer
+):
+    try:
+        return await proxy.resolve_ingestion_review_question(
+            version_id, question_id, payload.answer
+        )
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.post(
+    "/api/ingestion/versions/{version_id}/review-questions/{question_id}/apply"
+)
+async def apply_ingestion_review_resolution(
+    version_id: str, question_id: str
+):
+    try:
+        return await proxy.apply_ingestion_review_resolution(
+            version_id, question_id
+        )
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.get(
+    "/api/ingestion/versions/{version_id}/review-artifacts/{artifact_path:path}"
+)
+async def ingestion_review_artifact(
+    version_id: str, artifact_path: str
+) -> Response:
+    try:
+        content, content_type = await proxy.get_ingestion_review_artifact(
+            version_id, artifact_path
+        )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    except proxy.UpstreamServiceError as exc:
+        _raise_upstream(exc)
+
+
+@app.post("/api/ingestion/versions/{version_id}/reingest", status_code=202)
+async def reingest_version(version_id: str):
+    async with _runtime_lock:
+        if (
+            _live_session_manager is not None
+            and _live_session_manager.state != "idle"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="end Live Q&A before reingesting documents",
+            )
+        try:
+            return await proxy.reingest_version(version_id)
+        except proxy.UpstreamServiceError as exc:
+            _raise_upstream(exc)
 
 
 @app.post("/api/ingestion/versions/{version_id}/approve")

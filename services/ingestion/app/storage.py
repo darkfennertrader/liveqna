@@ -96,6 +96,12 @@ class VersionStorage:
         rmtree(document_directory, ignore_errors=True)
         self._remove_empty_parents(document_directory.parent)
 
+    async def delete_project(self, project_id: UUID) -> None:
+        project_directory = self._safe_path(str(project_id))
+        if project_directory == self._root:
+            raise ValueError("refusing to delete the storage root")
+        rmtree(project_directory, ignore_errors=True)
+
     def absolute_path(self, relative_path: str) -> Path:
         return self._safe_path(relative_path)
 
@@ -121,6 +127,24 @@ class VersionStorage:
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
         return destination.relative_to(self._root).as_posix()
+
+    def read_pptx_llm_report(self, source_path: str) -> str:
+        source = self._safe_path(source_path)
+        report = source.parent / PPTX_LLM_REPORT_FILENAME
+        return report.read_text(encoding="utf-8")
+
+    def review_artifact(self, source_path: str, artifact_path: str) -> Path:
+        source = self._safe_path(source_path)
+        version_directory = source.parent.resolve()
+        supplied = Path(artifact_path)
+        if supplied.is_absolute():
+            raise ValueError("review artifact path must be relative")
+        artifact = (version_directory / supplied).resolve()
+        if version_directory not in artifact.parents:
+            raise ValueError("review artifact path escapes the document version")
+        if artifact.suffix.lower() != ".png" or not artifact.is_file():
+            raise FileNotFoundError(artifact_path)
+        return artifact
 
     def read_normalized(self, relative_path: str) -> dict:
         normalized = self._safe_path(relative_path)

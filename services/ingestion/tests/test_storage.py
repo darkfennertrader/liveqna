@@ -40,6 +40,20 @@ async def test_version_storage_uses_stable_ids_and_hashes_content(tmp_path) -> N
     assert storage.absolute_path(report_path).read_text(encoding="utf-8") == (
         "# PPTX LLM slide report\n"
     )
+    assert storage.read_pptx_llm_report(stored.relative_path) == (
+        "# PPTX LLM slide report\n"
+    )
+
+    slide = storage.absolute_path(stored.relative_path).parent / "slides" / "slide-0001.png"
+    slide.parent.mkdir()
+    slide.write_bytes(b"png")
+    assert storage.review_artifact(
+        stored.relative_path, "slides/slide-0001.png"
+    ) == slide
+    with pytest.raises(ValueError, match="escapes"):
+        storage.review_artifact(stored.relative_path, "../source.pdf")
+    with pytest.raises(FileNotFoundError):
+        storage.review_artifact(stored.relative_path, "source.pdf")
 
     await storage.delete_version(stored.relative_path)
     assert not storage.exists(stored.relative_path)
@@ -65,6 +79,29 @@ async def test_document_storage_deletes_every_version(tmp_path) -> None:
     )
 
     await storage.delete_document(project_id, document_id)
+
+    assert not storage.exists(first.relative_path)
+    assert not storage.exists(second.relative_path)
+
+
+@pytest.mark.asyncio
+async def test_project_storage_deletes_every_document(tmp_path) -> None:
+    storage = VersionStorage(tmp_path)
+    project_id = uuid4()
+    first = await storage.save_upload(
+        project_id,
+        uuid4(),
+        uuid4(),
+        UploadFile(file=BytesIO(b"first"), filename="first.pdf"),
+    )
+    second = await storage.save_upload(
+        project_id,
+        uuid4(),
+        uuid4(),
+        UploadFile(file=BytesIO(b"second"), filename="second.pdf"),
+    )
+
+    await storage.delete_project(project_id)
 
     assert not storage.exists(first.relative_path)
     assert not storage.exists(second.relative_path)

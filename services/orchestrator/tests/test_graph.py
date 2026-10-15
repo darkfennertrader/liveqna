@@ -84,7 +84,7 @@ async def test_generates_multiple_questions_and_pauses_for_review() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_generation_is_ignored_without_human_review() -> None:
+async def test_empty_generation_fails_without_human_review() -> None:
     graph = build_graph(
         supervisor=FakeSupervisor(),
         question_generator=FakeQuestionGenerator([[]]),
@@ -93,8 +93,9 @@ async def test_empty_generation_is_ignored_without_human_review() -> None:
 
     result = await graph.ainvoke(initial_state(), config())
 
-    assert result["status"] == "ignored"
+    assert result["status"] == "failed"
     assert result["questions"] == []
+    assert result["error"] == "Question generator returned no questions for READY text."
     assert "__interrupt__" not in result
 
 

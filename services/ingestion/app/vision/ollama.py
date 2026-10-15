@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from ..extraction.models import (
     SlideReconciliation,
+    SlideResolutionResult,
+    SlideReviewDecisionFinding,
     SlideReviewResult,
     SlideVisionResult,
 )
@@ -21,7 +23,9 @@ from .prompt import (
     SYSTEM_INSTRUCTIONS,
     page_prompt,
     REVIEW_SYSTEM_INSTRUCTIONS,
+    RESOLUTION_SYSTEM_INSTRUCTIONS,
     review_prompt,
+    resolution_prompt,
     slide_prompt,
 )
 
@@ -33,11 +37,13 @@ class OllamaVisionProvider:
         self,
         *,
         model: str,
+        temperature: float | None = None,
         base_url: str,
         timeout_seconds: float = 180.0,
         client: httpx.Client | None = None,
     ) -> None:
         self.model = model
+        self._temperature = temperature
         self._client = client or httpx.Client(
             base_url=base_url.rstrip("/"), timeout=timeout_seconds
         )
@@ -112,6 +118,35 @@ class OllamaVisionProvider:
             result_type=SlideReviewResult,
         )
 
+    def resolve_slide(
+        self,
+        image_path: Path,
+        *,
+        slide_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult:
+        del prompt_version
+        return self._analyze(
+            image_path,
+            instructions=RESOLUTION_SYSTEM_INSTRUCTIONS,
+            prompt=resolution_prompt(
+                slide_number=slide_number,
+                content_profile=content_profile,
+                native_markdown=native_markdown,
+                current_markdown=current_markdown,
+                finding=finding,
+                question=question,
+                answer=answer,
+            ),
+            result_type=SlideResolutionResult,
+        )
+
     def _analyze(
         self,
         image_path: Path,
@@ -122,23 +157,26 @@ class OllamaVisionProvider:
     ) -> Any:
         image = base64.b64encode(image_path.read_bytes()).decode("ascii")
         try:
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": instructions},
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [image],
+                    },
+                ],
+                "format": result_type.model_json_schema(),
+                "stream": False,
+                "think": False,
+                "options": {},
+            }
+            if self._temperature is not None:
+                payload["options"]["temperature"] = self._temperature
             response = self._client.post(
                 "/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": instructions},
-                        {
-                            "role": "user",
-                            "content": prompt,
-                            "images": [image],
-                        },
-                    ],
-                    "format": result_type.model_json_schema(),
-                    "stream": False,
-                    "think": False,
-                    "options": {"temperature": 0},
-                },
+                json=payload,
             )
             response.raise_for_status()
             content = response.json()["message"]["content"]

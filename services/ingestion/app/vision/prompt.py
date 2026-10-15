@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 
-from ..extraction.models import SlideReconciliation, SlideVisionResult
+from ..extraction.models import (
+    SlideReconciliation,
+    SlideReviewDecisionFinding,
+    SlideVisionResult,
+)
 
 PROMPT_VERSION = "pptx-slide-v4"
 PDF_PROMPT_VERSION = "pdf-page-v1"
 REVIEW_PROMPT_VERSION = "pptx-slide-review-v1"
+RESOLUTION_PROMPT_VERSION = "pptx-human-resolution-v1"
 
 
 SYSTEM_INSTRUCTIONS = """You extract retrieval evidence from one presentation slide.
@@ -54,6 +59,18 @@ cannot be judged confidently; FORMAT_ONLY for a non-semantic presentation issue;
 and NO_DISCREPANCY when no review issue exists. If there is no issue, return
 exactly one NO_DISCREPANCY finding. Never combine NO_DISCREPANCY with another
 category. Return only the requested structured result."""
+
+
+RESOLUTION_SYSTEM_INSTRUCTIONS = """You resolve one presentation-slide review
+finding using an explicit human answer. Return a complete proposed normalized
+Markdown representation of the slide. Preserve authoritative native wording,
+numbers, dates, names, and labels unless the human explicitly supplies a
+correction. You may add meaning stated by the human, but identify it naturally
+without claiming it was machine-extracted from the slide. Do not introduce any
+fact beyond the native evidence, rendered image, current normalized Markdown,
+finding, and human answer. If the answer is ambiguous, unknown, or insufficient,
+set remaining_uncertainty to true and ask one precise follow-up question. Never
+silently discard source evidence. Return only the requested structured result."""
 
 
 def slide_prompt(
@@ -105,5 +122,32 @@ def review_prompt(
         "Review the rendered slide against this evidence bundle. The rendered "
         "image and native extraction are source evidence; prior generated "
         "descriptions are claims to verify.\n\n"
+        + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def resolution_prompt(
+    *,
+    slide_number: int,
+    content_profile: str,
+    native_markdown: str,
+    current_markdown: str,
+    finding: SlideReviewDecisionFinding,
+    question: str,
+    answer: str,
+) -> str:
+    evidence = {
+        "native_markdown": native_markdown,
+        "current_normalized_markdown": current_markdown,
+        "review_finding": finding.model_dump(mode="json"),
+        "question": question,
+        "human_answer": answer,
+    }
+    return (
+        f"Slide number: {slide_number}\n"
+        f"Business content profile: {content_profile}\n\n"
+        "Resolve only the supplied finding. The human answer is authoritative "
+        "for the requested clarification, while native extraction remains "
+        "authoritative for unchanged exact source facts.\n\n"
         + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
     )

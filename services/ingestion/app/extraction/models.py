@@ -219,6 +219,38 @@ class SlideReviewDecision(BaseModel):
     judge_provenance: SlideReviewProvenance | None = None
 
 
+class SlideResolutionResult(BaseModel):
+    """Strict LLM proposal grounded in one human answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resolved_markdown: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    remaining_uncertainty: bool
+    follow_up_question: str | None = None
+
+
+class SlideHumanResolution(BaseModel):
+    """Auditable human answer and its LLM-produced normalized proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: str
+    finding_index: int = Field(ge=0)
+    question: str
+    answer: str
+    status: Literal["PROPOSED", "APPLIED"] = "PROPOSED"
+    resolved_markdown: str
+    rationale: str
+    remaining_uncertainty: bool
+    follow_up_question: str | None = None
+    provider: str
+    model: str
+    prompt_version: str
+    response_hash: str
+    duration_ms: int = Field(ge=0)
+
+
 SlideRelationshipType = Literal[
     "previous",
     "next",
@@ -301,6 +333,7 @@ class NormalizedSlide(BaseModel):
     vision_provenance: SlideVisionProvenance
     reconciliation: SlideReconciliation | None = None
     review: SlideReviewDecision | None = None
+    human_resolutions: list[SlideHumanResolution] = Field(default_factory=list)
     relationships: list[SlideRelationship] = Field(default_factory=list)
     combined_markdown: str
 

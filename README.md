@@ -68,18 +68,17 @@ docker compose up --build
 The local Live Q&A transcription model is preloaded by default. Runtime
 ownership changes only from the two start actions:
 
-- **Start ingestion:** when ingestion is configured with local Ollama models,
-  capture is stopped and the local Live Q&A models are unloaded before the
-  upload jobs begin. With remote-only ingestion, both workflows remain
-  available in parallel and no Live Q&A model is unloaded.
+- **Start ingestion:** rejected while Live Q&A is active, even when ingestion
+  uses only remote models. When ingestion uses local Ollama models, the local
+  Live Q&A models are unloaded before upload jobs begin.
 - **Start Live Q&A:** any idle local ingestion models are unloaded, then the
   configured transcription model is loaded if it is not already resident.
-  Starting Live Q&A is rejected while a local-model ingestion job is active.
+  Starting Live Q&A is rejected while any ingestion job is active.
 - **Stop Live Q&A:** stops audio capture only. It deliberately leaves the Live
   Q&A model loaded for a low-latency restart.
 
-Remote OpenAI models do not use local GPU memory and therefore do not require
-runtime unloading.
+Remote OpenAI models do not require GPU unloading, but the two workflows remain
+mutually exclusive so session state and operator feedback stay unambiguous.
 
 Run the orchestrator tests without starting services:
 

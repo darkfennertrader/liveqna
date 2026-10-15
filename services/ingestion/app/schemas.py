@@ -28,6 +28,12 @@ class DocumentDeletionStatus(StrEnum):
     DELETE_FAILED = "DELETE_FAILED"
 
 
+class ProjectDeletionStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DELETING = "DELETING"
+    DELETE_FAILED = "DELETE_FAILED"
+
+
 class ProcessingStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
@@ -64,7 +70,17 @@ class ProjectCreate(BaseModel):
 class ProjectResponse(BaseModel):
     id: UUID
     name: str
+    deletion_status: ProjectDeletionStatus
+    deletion_error: str | None
+    deletion_requested_at: datetime | None
     created_at: datetime
+
+
+class ProjectDeletionResponse(BaseModel):
+    project_id: UUID
+    status: ProjectDeletionStatus
+    document_count: int = Field(ge=0)
+    version_count: int = Field(ge=0)
 
 
 class DocumentCreate(BaseModel):
@@ -133,3 +149,9 @@ class ExtractionRunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+
+
+class ReviewAnswerRequest(BaseModel):
+    answer: str = Field(min_length=1, max_length=10_000)
+
+    _clean_answer = field_validator("answer")(_non_empty)

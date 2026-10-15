@@ -162,7 +162,7 @@ class OrchestrationService:
         try:
             await self._graph.ainvoke(initial_state, self._config(run_id))
             response = await self.get_run(run_id)
-            await self._repository.update(run_id, response.status)
+            await self._repository.update(run_id, response.status, response.error)
             if self._question_memory is not None:
                 self._question_memory.enqueue_snapshot(response)
         except Exception as exc:
@@ -202,7 +202,7 @@ class OrchestrationService:
                     self._config(run_id),
                 )
                 response = await self.get_run(run_id)
-                await self._repository.update(run_id, response.status)
+                await self._repository.update(run_id, response.status, response.error)
                 if self._question_memory is not None:
                     self._question_memory.enqueue_snapshot(response)
                 return response

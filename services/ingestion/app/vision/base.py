@@ -5,6 +5,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..extraction.models import (
     SlideReconciliation,
+    SlideResolutionResult,
+    SlideReviewDecisionFinding,
     SlideReviewResult,
     SlideVisionResult,
 )
@@ -58,3 +60,23 @@ class SlideReviewProvider(Protocol):
         reconciliation: SlideReconciliation,
         prompt_version: str,
     ) -> SlideReviewResult: ...
+
+
+@runtime_checkable
+class SlideResolutionProvider(Protocol):
+    name: str
+    model: str
+
+    def resolve_slide(
+        self,
+        image_path: Path,
+        *,
+        slide_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult: ...

@@ -9,7 +9,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from .database import Database
 from .errors import RegistryConflictError, RegistryNotFoundError
@@ -18,6 +18,7 @@ from .extraction.pdf_renderer import PdftoppmPdfRenderer
 from .extraction.pptx_renderer import LibreOfficePptxRenderer
 from .qdrant import QdrantProbe
 from .repository import RegistryRepository
+from .review_cache import clear_review_runs_cache
 from .schemas import (
     DeleteDraftResponse,
     DocumentCreate,
@@ -26,12 +27,18 @@ from .schemas import (
     DocumentVersionResponse,
     ExtractionRunResponse,
     ProjectCreate,
+    ProjectDeletionResponse,
     ProjectResponse,
+    ReviewAnswerRequest,
 )
 from .service import RegistryService
 from .settings import Settings
 from .storage import VersionStorage
-from .vision import create_review_provider, create_vision_provider
+from .vision import (
+    create_resolution_provider,
+    create_review_provider,
+    create_vision_provider,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -81,6 +88,8 @@ async def lifespan(app: FastAPI):
             review_prompt_version=settings.review_prompt_version,
             vision_max_concurrency=settings.vision_max_concurrency,
         ),
+        create_resolution_provider(settings),
+        settings.resolver_prompt_version,
         qdrant,
         settings.qdrant_collection,
     )
@@ -131,6 +140,7 @@ async def runtime_status(request: Request) -> dict:
             for provider, model in (
                 (settings.vision_provider, settings.vision_model),
                 (settings.review_provider, settings.review_model),
+                (settings.resolver_provider, settings.resolver_model),
             )
             if provider == "ollama"
         }
@@ -152,6 +162,7 @@ async def unload_runtime_models(request: Request) -> dict:
             for provider, model in (
                 (settings.vision_provider, settings.vision_model),
                 (settings.review_provider, settings.review_model),
+                (settings.resolver_provider, settings.resolver_model),
             )
             if provider == "ollama"
         }
@@ -175,6 +186,21 @@ async def unload_runtime_models(request: Request) -> dict:
             detail=f"failed to unload local ingestion model: {exc}",
         ) from exc
     return {"status": "unloaded", "models": model_names}
+
+
+@app.delete("/review-runs-cache")
+async def clear_review_runs(request: Request) -> dict:
+    registry = _registry(request)
+    if registry.active_extraction_count:
+        raise HTTPException(
+            status_code=409,
+            detail="wait for document ingestion to finish before clearing Gate 2 runs",
+        )
+    settings: Settings = request.app.state.settings
+    removed = await asyncio.to_thread(
+        clear_review_runs_cache, settings.review_runs_cache_dir
+    )
+    return {"status": "cleared", "entries_removed": removed}
 
 
 @app.get("/")
@@ -216,6 +242,17 @@ async def create_project(
 @app.get("/projects", response_model=list[ProjectResponse])
 async def list_projects(request: Request) -> list[ProjectResponse]:
     return await _registry(request).repository.list_projects()
+
+
+@app.delete(
+    "/projects/{project_id}",
+    response_model=ProjectDeletionResponse,
+    status_code=202,
+)
+async def delete_project(
+    project_id: UUID, request: Request
+) -> ProjectDeletionResponse:
+    return await _registry(request).delete_project(project_id)
 
 
 @app.post(
@@ -328,6 +365,57 @@ async def get_normalized_document(
     version_id: UUID, request: Request
 ) -> NormalizedDocument:
     return await _registry(request).normalized_document(version_id)
+
+
+@app.get(
+    "/versions/{version_id}/review-report",
+    response_class=PlainTextResponse,
+)
+async def get_review_report(
+    version_id: UUID, request: Request
+) -> PlainTextResponse:
+    report = await _registry(request).review_report(version_id)
+    return PlainTextResponse(report, media_type="text/markdown; charset=utf-8")
+
+
+@app.get("/versions/{version_id}/review-workflow")
+async def get_review_workflow(version_id: UUID, request: Request) -> dict:
+    return await _registry(request).review_workflow(version_id)
+
+
+@app.post(
+    "/versions/{version_id}/review-questions/{question_id}/resolve"
+)
+async def resolve_review_question(
+    version_id: UUID,
+    question_id: str,
+    payload: ReviewAnswerRequest,
+    request: Request,
+) -> dict:
+    return await _registry(request).resolve_review_question(
+        version_id, question_id, payload.answer
+    )
+
+
+@app.post(
+    "/versions/{version_id}/review-questions/{question_id}/apply"
+)
+async def apply_review_resolution(
+    version_id: UUID, question_id: str, request: Request
+) -> dict:
+    return await _registry(request).apply_review_resolution(
+        version_id, question_id
+    )
+
+
+@app.get("/versions/{version_id}/review-artifacts/{artifact_path:path}")
+async def get_review_artifact(
+    version_id: UUID, artifact_path: str, request: Request
+) -> FileResponse:
+    artifact = await _registry(request).review_artifact(
+        version_id, artifact_path
+    )
+    return FileResponse(artifact, media_type="image/png")
 
 
 @app.post(

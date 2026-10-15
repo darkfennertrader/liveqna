@@ -37,10 +37,12 @@ services:
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - INGESTION_DOCUMENT_STORAGE_DIR=/data/documents
       - INGESTION_MODEL_CACHE_DIR=/models
+      - INGESTION_REVIEW_RUNS_CACHE_DIR=${INGESTION_REVIEW_RUNS_CACHE_DIR:-/cache/ingestion/runs}
       - INGESTION_MIGRATIONS_DIR=/app/migrations
     volumes:
       - ./.data/ingestion/documents:/data/documents
       - ./.cache/models:/models
+      - ./.cache/ingestion/runs:${INGESTION_REVIEW_RUNS_CACHE_DIR:-/cache/ingestion/runs}
     ports:
       - "127.0.0.1:${INGESTION_PORT:-8084}:8084"
     depends_on:
@@ -114,12 +116,16 @@ services:
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://orchestrator:8083}
       - INGESTION_URL=${INGESTION_URL:-http://ingestion:8084}
       - INGESTION_DOCUMENT_DISPLAY_ROOT=${INGESTION_DOCUMENT_DISPLAY_ROOT:-/home/ray/projects/liveqna/.data/ingestion/documents}
+      - LIVE_LOGS_DIR=${LIVE_LOGS_DIR:-/data/live-session-logs}
+      - LIVE_LOGS_TIMEZONE=${LIVE_LOGS_TIMEZONE:-Europe/Rome}
       - LIVE_SESSION_SILENCE_MS=${LIVE_SESSION_SILENCE_MS:-500}
       - LIVE_SESSION_MAX_WAIT_MS=${LIVE_SESSION_MAX_WAIT_MS:-18000}
       - LIVE_SESSION_MAX_WORDS=${LIVE_SESSION_MAX_WORDS:-140}
       - LIVE_SESSION_FINALIZE_GRACE_MS=${LIVE_SESSION_FINALIZE_GRACE_MS:-3000}
     ports:
       - "${UI_PORT:-8080}:8080"
+    volumes:
+      - ./.data/live-session-logs:${LIVE_LOGS_DIR:-/data/live-session-logs}
     depends_on:
       - capture
       - stt

@@ -18,6 +18,7 @@ from .schemas import (
     DocumentVersionResponse,
     ExtractionRunResponse,
     ProjectCreate,
+    ProjectDeletionResponse,
     ProjectResponse,
 )
 
@@ -62,7 +63,8 @@ class RegistryRepository:
                     """
                     INSERT INTO ingestion.projects(id, name)
                     VALUES (%s, %s)
-                    RETURNING id, name, created_at
+                    RETURNING id, name, deletion_status, deletion_error,
+                              deletion_requested_at, created_at
                     """,
                     (uuid4(), payload.name),
                 )
@@ -78,7 +80,8 @@ class RegistryRepository:
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
                 """
-                SELECT id, name, created_at
+                SELECT id, name, deletion_status, deletion_error,
+                       deletion_requested_at, created_at
                 FROM ingestion.projects
                 ORDER BY lower(name), id
                 """
@@ -86,16 +89,202 @@ class RegistryRepository:
             rows = await cursor.fetchall()
         return [ProjectResponse(**row) for row in rows]
 
+    async def mark_project_deleting(
+        self, project_id: UUID
+    ) -> ProjectDeletionResponse:
+        async with self._pool.connection() as connection:
+            async with connection.transaction():
+                cursor = await connection.execute(
+                    """
+                    SELECT id, deletion_status
+                    FROM ingestion.projects
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (project_id,),
+                )
+                project = await cursor.fetchone()
+                if project is None:
+                    raise RegistryNotFoundError(
+                        f"project not found: {project_id}"
+                    )
+                counts_cursor = await connection.execute(
+                    """
+                    SELECT
+                        count(DISTINCT document.id)::integer AS document_count,
+                        count(version.id)::integer AS version_count
+                    FROM ingestion.documents AS document
+                    LEFT JOIN ingestion.document_versions AS version
+                      ON version.document_id = document.id
+                    WHERE document.project_id = %s
+                    """,
+                    (project_id,),
+                )
+                counts = await counts_cursor.fetchone()
+                await connection.execute(
+                    """
+                    UPDATE ingestion.projects
+                    SET deletion_status = 'DELETING',
+                        deletion_error = NULL,
+                        deletion_requested_at = now()
+                    WHERE id = %s
+                    """,
+                    (project_id,),
+                )
+                await connection.execute(
+                    """
+                    UPDATE ingestion.documents
+                    SET deletion_status = 'DELETING',
+                        deletion_error = NULL,
+                        deletion_requested_at = now()
+                    WHERE project_id = %s
+                    """,
+                    (project_id,),
+                )
+                await connection.execute(
+                    """
+                    UPDATE ingestion.ingestion_runs
+                    SET processing_status = 'FAILED',
+                        error_code = 'PROJECT_DELETING',
+                        error = 'project deletion was requested',
+                        completed_at = now()
+                    WHERE processing_status = 'QUEUED'
+                      AND document_version_id IN (
+                          SELECT version.id
+                          FROM ingestion.document_versions AS version
+                          JOIN ingestion.documents AS document
+                            ON document.id = version.document_id
+                          WHERE document.project_id = %s
+                      )
+                    """,
+                    (project_id,),
+                )
+        return ProjectDeletionResponse(
+            project_id=project_id,
+            status="DELETING",
+            document_count=counts["document_count"],
+            version_count=counts["version_count"],
+        )
+
+    async def project_deletion_plan(self, project_id: UUID) -> dict:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id, name, deletion_status
+                FROM ingestion.projects
+                WHERE id = %s
+                """,
+                (project_id,),
+            )
+            project = await cursor.fetchone()
+            if project is None:
+                raise RegistryNotFoundError(
+                    f"project not found: {project_id}"
+                )
+            documents_cursor = await connection.execute(
+                """
+                SELECT id
+                FROM ingestion.documents
+                WHERE project_id = %s
+                ORDER BY created_at, id
+                """,
+                (project_id,),
+            )
+            document_rows = await documents_cursor.fetchall()
+        return {
+            **project,
+            "document_ids": [row["id"] for row in document_rows],
+        }
+
+    async def complete_project_deletion(self, project_id: UUID) -> None:
+        async with self._pool.connection() as connection:
+            async with connection.transaction():
+                cursor = await connection.execute(
+                    """
+                    SELECT id, deletion_status
+                    FROM ingestion.projects
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (project_id,),
+                )
+                project = await cursor.fetchone()
+                if project is None:
+                    return
+                if project["deletion_status"] != "DELETING":
+                    raise RegistryConflictError(
+                        "project is not marked for deletion"
+                    )
+                documents_cursor = await connection.execute(
+                    """
+                    SELECT count(*)::integer AS document_count
+                    FROM ingestion.documents
+                    WHERE project_id = %s
+                    """,
+                    (project_id,),
+                )
+                documents = await documents_cursor.fetchone()
+                if documents["document_count"]:
+                    raise RegistryConflictError(
+                        "project still has documents"
+                    )
+                await connection.execute(
+                    """
+                    DELETE FROM ingestion.document_deletion_audit
+                    WHERE project_id = %s
+                    """,
+                    (project_id,),
+                )
+                await connection.execute(
+                    "DELETE FROM ingestion.projects WHERE id = %s",
+                    (project_id,),
+                )
+
+    async def fail_project_deletion(
+        self, project_id: UUID, error: str
+    ) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                """
+                UPDATE ingestion.projects
+                SET deletion_status = 'DELETE_FAILED', deletion_error = %s
+                WHERE id = %s
+                """,
+                (error[:2000], project_id),
+            )
+
+    async def pending_project_deletions(self) -> list[UUID]:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id
+                FROM ingestion.projects
+                WHERE deletion_status = 'DELETING'
+                ORDER BY deletion_requested_at, id
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row["id"] for row in rows]
+
     async def create_document(
         self, project_id: UUID, payload: DocumentCreate
     ) -> DocumentResponse:
         async with self._pool.connection() as connection:
             project = await connection.execute(
-                "SELECT id FROM ingestion.projects WHERE id = %s",
+                """
+                SELECT id, deletion_status
+                FROM ingestion.projects
+                WHERE id = %s
+                """,
                 (project_id,),
             )
-            if await project.fetchone() is None:
+            project_row = await project.fetchone()
+            if project_row is None:
                 raise RegistryNotFoundError(f"project not found: {project_id}")
+            if project_row["deletion_status"] != "ACTIVE":
+                raise RegistryConflictError(
+                    f"project is {project_row['deletion_status'].lower()}"
+                )
             try:
                 cursor = await connection.execute(
                     """
@@ -568,6 +757,39 @@ class RegistryRepository:
         if row is None:
             raise RegistryConflictError("extraction run is not running")
         return await self.get_extraction_run(run_id)
+
+    async def complete_human_review(
+        self, version_id: UUID
+    ) -> ExtractionRunResponse:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE ingestion.ingestion_runs
+                SET processing_status = 'READY',
+                    error_code = NULL,
+                    error = NULL,
+                    completed_at = now()
+                WHERE id = (
+                    SELECT id
+                    FROM ingestion.ingestion_runs
+                    WHERE document_version_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                  AND processing_status = 'NEEDS_REVIEW'
+                RETURNING id
+                """,
+                (version_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            latest = await self.latest_extraction(version_id)
+            if latest.processing_status.value == "READY":
+                return latest
+            raise RegistryConflictError(
+                "the latest extraction is not waiting for human review"
+            )
+        return await self.get_extraction_run(row["id"])
 
     async def get_extraction_run(self, run_id: UUID) -> ExtractionRunResponse:
         async with self._pool.connection() as connection:

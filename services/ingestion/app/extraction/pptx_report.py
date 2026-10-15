@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .models import NormalizedDocument, NormalizedSlide
+from .pptx_resolution import review_questions
 
 
 PPTX_LLM_REPORT_FILENAME = "PPTX-LLM-SLIDE-REPORT.md"
@@ -208,18 +209,6 @@ def _slide_section(slide: NormalizedSlide) -> list[str]:
                 + ("; ".join(slide.reconciliation.conflicts) or "none"),
             ]
         )
-        if slide.reconciliation.alignments:
-            lines.extend(["", "#### Alignment details", ""])
-            for alignment in slide.reconciliation.alignments:
-                native_ids = ", ".join(alignment.native_element_ids) or "none"
-                visual_ids = ", ".join(alignment.visual_element_ids) or "none"
-                lines.append(
-                    f"- `{alignment.relationship}` via `{alignment.match_method}`: "
-                    f"native [{native_ids}], visual [{visual_ids}], "
-                    f"score={alignment.score:.3f}, text={alignment.text_coverage:.3f}, "
-                    f"spatial={alignment.spatial_similarity:.3f}, "
-                    f"type={alignment.type_compatibility:.3f}; {alignment.reason}"
-                )
     lines.extend(["", "### Logical slide relationships", ""])
     if slide.relationships:
         for relationship in slide.relationships:
@@ -280,6 +269,32 @@ def _slide_section(slide: NormalizedSlide) -> list[str]:
                     "- Reason: No independent judge result is available.",
                 ]
             )
+    questions = review_questions(slide)
+    if questions:
+        lines.extend(["", "### Human discrepancy resolution", ""])
+        for question in questions:
+            resolution = question["resolution"]
+            lines.extend(
+                [
+                    f"#### Question {question['finding_index'] + 1}",
+                    "",
+                    f"- Severity: **{question['severity']}**",
+                    f"- Discrepancy: {question['description']}",
+                    f"- Question: **{question['question']}**",
+                ]
+            )
+            if resolution is None:
+                lines.append("- Resolution status: **UNANSWERED**")
+            else:
+                lines.extend(
+                    [
+                        f"- Human answer: {resolution['answer']}",
+                        f"- Resolution status: **{resolution['status']}**",
+                        f"- LLM rationale: {resolution['rationale']}",
+                        "- Remaining uncertainty: "
+                        + ("yes" if resolution["remaining_uncertainty"] else "no"),
+                    ]
+                )
     lines.extend(
         [
             "",
@@ -320,7 +335,16 @@ def _review_summary(slide: NormalizedSlide) -> tuple[str, str, str, str]:
             "PARTIAL_OR_UNCERTAIN",
             "Independent second-pass review was not run.",
         )
+    questions = review_questions(slide)
+    resolved = bool(questions) and all(
+        question["resolution"] is not None
+        and question["resolution"]["status"] == "APPLIED"
+        for question in questions
+    )
     status = (
+        "HUMAN RESOLVED"
+        if resolved
+        else
         "HUMAN REVIEW REQUIRED"
         if slide.review.status == "REVIEW_REQUIRED"
         else "AUTO PASS"

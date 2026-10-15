@@ -99,6 +99,22 @@ def build_graph(
             standalone_intent=state.get("standalone_intent", ""),
             feedback=state.get("review_feedback", ""),
         )
+        generation_ms = int(
+            state.get("question_generation_ms") or 0
+        ) + round((perf_counter() - phase_started) * 1000)
+        if not generated.questions:
+            return Command(
+                update={
+                    "questions": state.get("questions", []),
+                    "status": "failed",
+                    "target_question_id": None,
+                    "question_generation_ms": generation_ms,
+                    "review_feedback": "",
+                    "updated_at": _now(),
+                    "error": "Question generator returned no questions for READY text.",
+                },
+                goto=END,
+            )
         if target_question_id:
             questions = []
             replacement = generated.questions[0] if generated.questions else None
@@ -126,18 +142,16 @@ def build_graph(
             ]
         update = {
             "questions": questions,
-            "status": "awaiting_review" if questions else "ignored",
+            "status": "awaiting_review",
             "target_question_id": None,
-            "question_generation_ms": int(
-                state.get("question_generation_ms") or 0
-            ) + round((perf_counter() - phase_started) * 1000),
+            "question_generation_ms": generation_ms,
             "review_feedback": "",
             "updated_at": _now(),
             "error": None,
         }
         return Command(
             update=update,
-            goto="human_review" if questions else END,
+            goto="human_review",
         )
 
     async def human_review_node(state: OrchestrationState) -> Command:

@@ -51,3 +51,14 @@ def test_openai_model_uses_responses_api_and_selected_latency_profile(monkeypatc
     assert model.service_tier == "ultrafast"
     assert model.use_responses_api is True
     assert model.temperature is None
+
+
+def test_agent_temperatures_are_independent_environment_defaults(monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_TEMPERATURE", "0.1")
+    monkeypatch.setenv("QUESTION_AGENT_TEMPERATURE", "0.7")
+
+    supervisor = _default_selection("SUPERVISOR")
+    question_agent = _default_selection("QUESTION_AGENT")
+
+    assert supervisor.parameters["temperature"] == 0.1
+    assert question_agent.parameters["temperature"] == 0.7
