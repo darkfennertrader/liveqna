@@ -262,10 +262,10 @@ timestamp needed to trace a result to its source.
 
 All extractors emit the same normalized structure before chunking.
 
-The [visual ingestion pipeline](docs/ingestion-pipeline.md) focuses on the PPTX
-native-plus-vision path, deterministic reconciliation, and the exact files
-produced for Gate 2 inspection. The table below documents the other format
-paths and their boundaries.
+The [PPTX ingestion pipeline](docs/pptx-ingestion-pipeline.md) shows the
+native-plus-vision path from source validation through canonical
+`normalized.json`. The table below documents the other format paths and their
+boundaries.
 
 | Format | Initial extraction strategy |
 | --- | --- |

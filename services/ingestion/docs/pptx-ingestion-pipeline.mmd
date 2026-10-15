@@ -1,0 +1,81 @@
+%%{init: {"theme": "base", "flowchart": {"curve": "linear", "nodeSpacing": 70, "rankSpacing": 85, "htmlLabels": true}, "themeVariables": {"background": "#ffffff", "fontSize": "17px", "lineColor": "#52606d"}}}%%
+flowchart TB
+    title["<div style='width:760px'><b>PPTX INGESTION PIPELINE</b><br/>Upload through reviewed canonical <code>normalized.json</code></div>"]
+
+    subgraph intake["1 · INTAKE AND SOURCE VALIDATION"]
+        direction LR
+        upload["<div style='width:360px'><b>Receive and register the presentation</b><br/>Save an immutable source version and calculate its SHA-256 hash<br/><br/><b>Component:</b> Registry service and VersionStorage<br/><b>Scripts:</b> app/service.py · app/storage.py</div>"]
+        validate["<div style='width:360px'><b>Validate the source before extraction</b><br/>Route <code>.pptx</code>, confirm the stored file exists, and open the OOXML package with python-pptx<br/><br/><b>Component:</b> ExtractionPipeline and PPTX native parser<br/><b>Scripts:</b> app/extraction/pipeline.py · app/extraction/pptx.py</div>"]
+        failed["<div style='width:240px'><b>FAILED</b><br/>Unsupported, missing, or corrupt source</div>"]
+        upload -->|source.pptx + SHA-256| validate
+        validate -.->|invalid| failed
+    end
+
+    subgraph extraction["2 · HYBRID EXTRACTION — REPEATED FOR EVERY SLIDE"]
+        direction LR
+        coordinate["<div style='width:280px'><b>Coordinate both paths</b><br/>Process every slide through native and visual extraction<br/><br/><b>Component:</b> PPTX hybrid extractor<br/><b>Script:</b> app/extraction/pptx.py</div>"]
+        native["<div style='width:360px'><b>Extract authoritative native evidence</b><br/>Read titles, paragraphs, tables, charts, images, notes, element IDs, block IDs, and normalized geometry<br/><br/><b>Component:</b> python-pptx native extractor<br/><b>Script:</b> app/extraction/pptx.py</div>"]
+        render["<div style='width:360px'><b>Render and verify every slide</b><br/>Convert PPTX → PDF → PNG, preserve order, hash each image, and verify rendered count against native slide count<br/><br/><b>Component:</b> LibreOfficePptxRenderer<br/><b>Script:</b> app/extraction/pptx_renderer.py</div>"]
+        vision["<div style='width:360px'><b>Extract visual evidence</b><br/>Describe regions, diagrams, charts, tables, relationships, labels, and uncertainty from each PNG<br/><br/><b>Component:</b> Multimodal LLM — call 1<br/><b>Scripts:</b> app/vision/base.py · app/extraction/pptx.py</div>"]
+        coordinate --> native
+        coordinate --> render -->|slides/slide-####.png| vision
+    end
+
+    subgraph assurance["3 · RECONCILIATION AND QUALITY VALIDATION"]
+        direction LR
+        reconcile["<div style='width:360px'><b>Reconcile native and visual evidence</b><br/>Globally align elements using text, geometry, type, and reading order; native wording and numbers remain authoritative<br/><br/><b>Component:</b> Deterministic element-level reconciler<br/><b>Script:</b> app/extraction/pptx_reconcile.py</div>"]
+        quality["<div style='width:390px'><b>Validate the reconciled slide</b><br/>Independently compare PNG, native evidence, visual evidence, and reconciliation; map findings to severity and decide AUTO_PASS or REVIEW_REQUIRED<br/><br/><b>Component:</b> Multimodal LLM — call 2 plus deterministic review policy<br/><b>Scripts:</b> app/vision/base.py · app/extraction/pptx_review.py</div>"]
+        link["<div style='width:340px'><b>Link related slides</b><br/>Use order, explicit references, titles, entities, labels, and content similarity to create explainable relationships<br/><br/><b>Component:</b> Explainable slide linker<br/><b>Script:</b> app/extraction/pptx_link.py</div>"]
+        reconcile -->|reconciled evidence| quality
+        quality -->|decision embedded per slide| link
+    end
+
+    subgraph canonical["4 · CANONICAL NORMALIZATION"]
+        direction LR
+        normalize["<div style='width:390px'><b>Normalize and schema-validate</b><br/>Assemble blocks, slides, evidence, reconciliation, review decisions, relationships, provenance, hashes, and metadata<br/><br/><b>Component:</b> Pydantic NormalizedDocument 1.5<br/><b>Scripts:</b> app/extraction/models.py · app/extraction/pptx.py</div>"]
+        persist["<div style='width:360px'><b>Persist the initial canonical result</b><br/>Write <code>normalized.json</code> atomically with every slide's review decision<br/><br/><b>Component:</b> Ingestion service and VersionStorage<br/><b>Scripts:</b> app/service.py · app/storage.py</div>"]
+        reviewState{"<div style='width:240px'><b>Processing status?</b></div>"}
+        normalize --> persist --> reviewState
+    end
+
+    subgraph correction["5 · CONDITIONAL HUMAN CORRECTION — ONLY WHEN REVIEW IS REQUIRED"]
+        direction LR
+        questions["<div style='width:340px'><b>Create inconsistency questions</b><br/>Convert every material finding into a deterministic, slide-specific question<br/><br/><b>Component:</b> Review-question builder<br/><b>Script:</b> app/extraction/pptx_resolution.py</div>"]
+        human["<div style='width:320px'><b>Human answers the questions</b><br/>Review the rendered slide and provide the correct fact, relationship, missing meaning, or clarification<br/><br/><b>Component:</b> Gate 2 review UI<br/><b>Script:</b> services/ui/app/static/review-report.js</div>"]
+        resolve["<div style='width:370px'><b>Resolve the inconsistency</b><br/>Use the PNG, native evidence, current reconciled Markdown, finding, and human answer to propose corrected Markdown<br/><br/><b>Component:</b> Multimodal resolution LLM<br/><b>Scripts:</b> app/service.py · app/vision/base.py</div>"]
+        apply["<div style='width:360px'><b>Human applies the correction</b><br/>Mark the resolution APPLIED, update <code>combined_markdown</code>, and atomically overwrite the same <code>normalized.json</code><br/><br/><b>Component:</b> Ingestion review workflow<br/><b>Scripts:</b> app/service.py · app/storage.py · app/repository.py</div>"]
+        questions --> human --> resolve -->|no remaining uncertainty| apply
+        resolve -.->|clarification still required| human
+        apply -.->|next unresolved question| human
+    end
+
+    subgraph finalOutput["6 · FINAL NORMALIZED OUTPUT"]
+        direction LR
+        output["<div style='width:390px'><b>READY</b><br/>Reviewed canonical <code>normalized.json</code><br/>All required corrections are applied</div>"]
+    end
+
+    title --> intake
+    intake -->|valid PPTX| extraction
+    extraction -->|native + visual slide evidence| assurance
+    assurance -->|reconciled, validated, linked slides| canonical
+    canonical -->|AUTO_PASS · READY| finalOutput
+    canonical -->|REVIEW_REQUIRED · NEEDS_REVIEW| correction
+    correction -->|all questions applied| finalOutput
+
+    classDef title fill:#ffffff,stroke:#ffffff,color:#172033,font-size:25px;
+    classDef input fill:#e8f1fb,stroke:#326891,color:#102a43,stroke-width:1.7px;
+    classDef validation fill:#fff7d6,stroke:#ae8615,color:#3f3100,stroke-width:1.7px;
+    classDef process fill:#fff0e6,stroke:#c56525,color:#5f2b08,stroke-width:1.7px;
+    classDef reconcile fill:#f5ecff,stroke:#7652a8,color:#35204f,stroke-width:1.7px;
+    classDef output fill:#e7f7f1,stroke:#238467,color:#0d4435,stroke-width:1.7px;
+    classDef failure fill:#fee2e2,stroke:#b42318,color:#5c1712,stroke-width:1.7px;
+
+    class title title;
+    class upload input;
+    class validate,quality,reviewState validation;
+    class coordinate,native,render,vision process;
+    class reconcile,link,normalize,questions reconcile;
+    class persist,apply,output output;
+    class human input;
+    class resolve process;
+    class failed failure;
