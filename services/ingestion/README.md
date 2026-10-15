@@ -264,15 +264,19 @@ All extractors emit the same normalized structure before chunking.
 
 The [PPTX ingestion pipeline](docs/pptx-ingestion-pipeline.md) shows the
 native-plus-vision path from source validation through canonical
-`normalized.json`. The table below documents the other format paths and their
-boundaries.
+`normalized.json`. The [PDF ingestion pipeline](docs/pdf-ingestion-pipeline.md)
+shows the corresponding page-level evidence, reconciliation, judge, and human
+resolution flow. The [XLSX ingestion pipeline](docs/xlsx-ingestion-pipeline.md)
+shows package validation, authoritative cell/formula extraction, isolated Calc
+recalculation, selective visual evidence, reconciliation, and worksheet-level
+human review. All diagrams stop before chunking and embedding.
 
 | Format | Initial extraction strategy |
 | --- | --- |
-| PDF | Hybrid page extraction: authoritative native page text plus selective rendered-page vision for image-dominant or vector-complex pages |
+| PDF | Every page: positioned PyMuPDF native evidence plus an independent rendered-page vision pass, deterministic reconciliation, independent judge, and page-specific human resolution when required |
 | PDF transcript | Native page text plus source-provided video name and overall time range; never infer missing speaker or turn timestamps |
 | PPTX | Hybrid slide extraction: native title/body/notes plus a rendered-slide vision pass producing Markdown, tables, visual descriptions, labels, and quality findings |
-| XLSX | Worksheet title, header row, data rows, and exact cell ranges |
+| XLSX | Validated OOXML package; authoritative typed cells, formulas, cached values, tables, named ranges and exact cell locators; isolated LibreOffice recalculation; selective rendered-sheet vision; deterministic reconciliation, independent judge and worksheet-specific human resolution |
 | DOCX | Headings, paragraphs, and tables in source order |
 | TXT/Markdown | Shared UTF-8 paragraph path, with Markdown heading and pipe-table recognition |
 
@@ -283,19 +287,43 @@ classify the document. A `transcript` PDF follows the native path only. It
 normalizes source-provided video name, overall start/end time, and duration, and
 does not infer missing speaker attribution or per-turn timestamps.
 
-Other PDFs use a local structural check before any model call. A page is selected
-for visual enrichment when it is image-dominant with little native text or has a
-high volume of vector drawing operations. Selection reasons and the underlying
-text/image/vector metrics are retained in the normalized page record. Selected
-pages are rendered independently with `pdftoppm`, analyzed through the same
-provider-neutral OpenAI/Ollama boundary used by PPTX, and reconciled with native
-wording remaining authoritative.
+Other PDFs use a complete two-pass page pipeline. PyMuPDF extracts exact native
+text, tables, image and vector regions, reading order, and normalized bounding
+boxes. It also renders every page to a stable PNG. The first multimodal call is
+independent and receives only the rendered page, page number, and content
+profile. Python then globally aligns native and visual elements using wording,
+geometry, type, and reading order; native extraction has precedence for exact
+facts, while supported visual meaning is retained and conflicts are quarantined.
 
-Prompt `pdf-page-v1` forbids invented wording, speaker attribution, or timestamps.
-Renderer version, image hash, provider, model, prompt version, response hash, and
-per-page duration are retained. A provider failure is `FAILED`; a material
-native/visual discrepancy, unclassifiable page, or OCR requirement is
-`NEEDS_REVIEW`, preserves partial normalized output, and blocks approval.
+A second multimodal call independently judges the rendered page, native
+evidence, visual output, and deterministic reconciliation. Findings at MEDIUM or
+above create page-specific questions in the common review UI. Human answers are
+resolved into proposed page Markdown and must be explicitly applied. Prompt,
+model, response, image, and render provenance remain in `normalized.json`.
+
+### XLSX native, calculation, and visual extraction profile
+
+XLSX ingestion validates the OOXML ZIP before opening it, inventories visible
+and hidden worksheets, and preserves workbook-level names, external links,
+embedded objects, calculation mode, and date system. Declared Excel tables and
+named ranges take precedence over deterministically detected occupied-cell
+regions. Every normalized cell retains its coordinate, native type, number
+format, formula, original cached value, independently recalculated value, and
+formula-audit status.
+
+LibreOffice Calc runs with an isolated profile, macro execution disabled, and
+external-link updates disabled. It recalculates and saves a separate inspection
+copy without modifying the immutable source. Worksheets containing formulas,
+charts, images, merged cells, conditional formatting, pivots, hidden content,
+external dependencies, embedded objects, or ambiguous headers are rendered for
+independent multimodal extraction and judging. Native cells remain authoritative.
+Material findings create worksheet-specific questions in the same human-review
+UI used by PPTX and PDF, and applied answers update the reconciled worksheet
+Markdown stored in `normalized.json`.
+
+OCR is not implemented. A page without native text produces `OCR_REQUIRED`,
+preserves partial output, becomes `NEEDS_REVIEW`, and blocks approval. The future
+OCR boundary is shown explicitly in the PDF pipeline diagram.
 
 ### PPTX hybrid extraction profile
 
@@ -768,6 +796,8 @@ Deliver:
 - one normalized block model shared by every format;
 - page, slide, worksheet/range, and timestamp source locators;
 - PPTX per-slide rendering with stable image hashes;
+- XLSX package validation, logical table/range detection, formula-cache audit,
+  isolated recalculation, selective worksheet rendering, and review questions;
 - provider-neutral local/remote vision-model adapter and structured response
   validation;
 - PPTX Markdown tables, chart/diagram descriptions, labels, and native/visual
@@ -784,6 +814,8 @@ Test:
 - deterministic native normalized output for the same source file;
 - tables, headings, slide notes, worksheet headers, text lines, and PDF pages
   retain their source locations;
+- XLSX fixtures verify declared-table precedence, typed cell coordinates,
+  formula/cache/recalculation status, and material worksheet review routing;
 - PPTX fixtures verify slide order, image hashes, structured vision responses,
   element geometry, duplicate suppression, complementary visual evidence,
   conflict preservation, Markdown tables, labels, and derived retrieval text;
@@ -898,20 +930,21 @@ The remaining-format review completed on 2026-10-14 with these results:
 - the representative DOCX passed: all non-empty body paragraphs and tables are
   represented, while its embedded images are non-retrieval-bearing Aegon logos;
 - the representative XLSX passed: worksheet, header, row, and cell-range
-  provenance are retained (large row-aware splitting remains Phase 3 work);
-- selective PDF detection now identifies architecture pages 2, 4, 6, 8, and 10
-  plus vector-heavy financial pages 17 and 21; all seven pages render locally
-  with stable image hashes;
+  provenance are retained; the production path now adds logical-region
+  detection, workbook metadata, formula verification, selective visual evidence,
+  reconciliation, judge output, and worksheet-specific human resolution;
+- the earlier selective PDF experiment identified representative visual pages;
+  production ingestion now processes and independently judges every PDF page;
 - the representative transcript PDF retains all 15 pages and 50,062 characters;
   its video name and overall `00:00:00`–`00:59:48` range remain in the native
   text, while the source contains no reliable per-turn speakers or timestamps;
 - the transcript metadata is normalized without inferred speaker or turn data;
-- 48 ingestion tests pass, with one optional LibreOffice test skipped.
+- the current ingestion suite covers the all-page PDF evidence, judge, report,
+  and review contracts; the optional LibreOffice integration remains separately
+  gated by its system dependency.
 
-Review Gate 2 remains open for PPTX slide 22 and for visual-quality inspection
-of the seven selected private PDF pages. External OpenAI review was not run for
-those PDF pages because explicit approval is required to send them outside the
-environment.
+The historical Gate 2 package predates the all-page PDF judge. New UI ingestion
+runs use the production page pipeline documented above.
 
 The stable review entry point is `.cache/ingestion/runs/latest.json`. It points
 to the newest immutable inspection batch under

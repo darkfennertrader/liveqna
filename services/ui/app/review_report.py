@@ -6,14 +6,16 @@ import re
 import markdown
 
 
-_RELATIVE_IMAGE = re.compile(r"\]\((?:\./)?(slides/[^)]+\.png)\)")
+_RELATIVE_IMAGE = re.compile(
+    r"\]\((?:\./)?((?:slides|pages|worksheets)/[^)]+\.png)\)"
+)
 _ALIGNMENT_DETAILS = re.compile(
     r"\n#### Alignment details\n.*?(?=\n### |\n## |\Z)", re.DOTALL
 )
 
 
 def render_review_report(version_id: str, report_markdown: str) -> str:
-    """Render a stored PPTX report without trusting report-authored HTML."""
+    """Render a stored document report without trusting report-authored HTML."""
     human_report = _ALIGNMENT_DETAILS.sub("", report_markdown)
     escaped = html.escape(human_report, quote=False)
     image_root = f"/api/ingestion/versions/{version_id}/review-artifacts/"

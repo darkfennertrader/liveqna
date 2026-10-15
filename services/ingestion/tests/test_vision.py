@@ -203,15 +203,69 @@ def test_openai_provider_uses_pdf_page_prompt(tmp_path: Path) -> None:
         image,
         page_number=7,
         content_profile="architecture",
-        native_markdown="Native page text",
-        prompt_version="pdf-page-v1",
+        prompt_version="pdf-page-v2",
     )
 
     prompt = captured["input"][0]["content"][0]["text"]
     assert "PDF page number: 7" in prompt
-    assert "Native PDF extraction" in prompt
-    assert "Do not infer speaker attribution" in captured["instructions"]
+    assert "Analyze only the rendered page" in prompt
+    assert "Native page text" not in prompt
+    assert "Do not infer speaker attribution" in " ".join(
+        captured["instructions"].split()
+    )
     assert "temperature" not in captured
+
+
+def test_openai_provider_reviews_and_resolves_pdf_page(tmp_path: Path) -> None:
+    captured = []
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.append(kwargs)
+            result_type = kwargs["text_format"]
+            parsed = review_result() if result_type is SlideReviewResult else resolution_result()
+            return SimpleNamespace(output_parsed=parsed)
+
+    image = tmp_path / "page.png"
+    image.write_bytes(b"png")
+    provider = OpenAIVisionProvider(
+        api_key="test",
+        model="test-model",
+        client=SimpleNamespace(responses=Responses()),
+    )
+    finding = SlideReviewDecisionFinding(
+        category="PARTIAL_OR_UNCERTAIN",
+        severity="MEDIUM",
+        source="judge",
+        description="The diagram arrow is unclear.",
+        evidence="The rendered page contains an ambiguous arrow.",
+    )
+    provider.review_page(
+        image,
+        page_number=2,
+        content_profile="architecture",
+        native_markdown="Native value 42",
+        native_elements=[],
+        vision=vision_result(),
+        reconciliation=SlideReconciliation(retrieval_markdown="Native value 42"),
+        prompt_version="pdf-page-review-v1",
+    )
+    provider.resolve_page(
+        image,
+        page_number=2,
+        content_profile="architecture",
+        native_markdown="Native value 42",
+        current_markdown="Native value 42",
+        finding=finding,
+        question="What does the arrow mean?",
+        answer="It means approval.",
+        prompt_version="pdf-human-resolution-v1",
+    )
+
+    assert captured[0]["text_format"] is SlideReviewResult
+    assert "native_elements" in captured[0]["input"][0]["content"][0]["text"]
+    assert captured[1]["text_format"] is SlideResolutionResult
+    assert "It means approval" in captured[1]["input"][0]["content"][0]["text"]
 
 
 def test_ollama_provider_sends_image_and_json_schema(tmp_path: Path) -> None:

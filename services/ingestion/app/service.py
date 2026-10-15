@@ -12,7 +12,20 @@ from fastapi import UploadFile
 from .errors import RegistryConflictError, RegistryNotFoundError
 from .extraction import ExtractionPipeline, NormalizedDocument
 from .extraction.models import SlideHumanResolution
-from .extraction.pptx_resolution import find_review_question, review_questions
+from .extraction.pdf_report import build_pdf_llm_report
+from .extraction.xlsx_report import build_xlsx_review_report
+from .extraction.pdf_resolution import (
+    find_review_question as find_pdf_review_question,
+    review_questions as pdf_review_questions,
+)
+from .extraction.pptx_resolution import (
+    find_review_question as find_pptx_review_question,
+    review_questions as pptx_review_questions,
+)
+from .extraction.xlsx_resolution import (
+    find_review_question as find_xlsx_review_question,
+    review_questions as xlsx_review_questions,
+)
 from .extraction.errors import ExtractionFailure
 from .extraction.pptx_report import build_pptx_llm_report
 from .qdrant import QdrantProbe
@@ -35,6 +48,7 @@ REVIEW_REQUIRED_CODES = {
     "OCR_REQUIRED",
     "PDF_REVIEW_REQUIRED",
     "PPTX_REVIEW_REQUIRED",
+    "XLSX_REVIEW_REQUIRED",
 }
 
 
@@ -47,6 +61,8 @@ class RegistryService:
         extraction: ExtractionPipeline,
         resolution_provider: SlideResolutionProvider,
         resolution_prompt_version: str,
+        pdf_resolution_prompt_version: str,
+        xlsx_resolution_prompt_version: str,
         qdrant: QdrantProbe,
         qdrant_collection: str,
     ) -> None:
@@ -56,6 +72,8 @@ class RegistryService:
         self._extraction = extraction
         self._resolution_provider = resolution_provider
         self._resolution_prompt_version = resolution_prompt_version
+        self._pdf_resolution_prompt_version = pdf_resolution_prompt_version
+        self._xlsx_resolution_prompt_version = xlsx_resolution_prompt_version
         self._qdrant = qdrant
         self._qdrant_collection = qdrant_collection
         self._background_tasks: set[asyncio.Task] = set()
@@ -176,6 +194,20 @@ class RegistryService:
     async def review_report(self, version_id: UUID) -> str:
         version = await self.repository.get_version(version_id)
         document = await self.normalized_document(version_id)
+        if document.source_format == "pdf" and document.pages:
+            try:
+                return self._storage.read_pdf_llm_report(version.file_path)
+            except FileNotFoundError as exc:
+                raise RegistryConflictError(
+                    "the PDF review report is not available yet"
+                ) from exc
+        if document.source_format == "xlsx" and document.worksheets:
+            try:
+                return self._storage.read_xlsx_review_report(version.file_path)
+            except FileNotFoundError as exc:
+                raise RegistryConflictError(
+                    "the XLSX review report is not available yet"
+                ) from exc
         if document.source_format != "pptx":
             warnings = document.quality.warnings or [
                 "No structured inconsistency questions were produced."
@@ -218,7 +250,7 @@ class RegistryService:
         total = 0
         applied = 0
         for slide in document.slides:
-            questions = review_questions(slide)
+            questions = pptx_review_questions(slide)
             if not questions:
                 continue
             total += len(questions)
@@ -237,6 +269,63 @@ class RegistryService:
                     },
                     "title": slide.title or "Untitled",
                     "artifact_path": slide.image_path,
+                    "questions": questions,
+                }
+            )
+        for page in document.pages:
+            questions = pdf_review_questions(page)
+            if not questions:
+                continue
+            total += len(questions)
+            applied += sum(
+                1
+                for question in questions
+                if question["resolution"] is not None
+                and question["resolution"]["status"] == "APPLIED"
+            )
+            title = next(
+                (
+                    element.content.removeprefix("# ")
+                    for element in page.native_elements
+                    if element.kind == "title" and element.content.strip()
+                ),
+                "PDF page",
+            )
+            groups.append(
+                {
+                    "locator": {
+                        "kind": "page",
+                        "number": page.page_number,
+                        "label": f"Page {page.page_number}",
+                    },
+                    "title": title,
+                    "artifact_path": page.image_path,
+                    "questions": questions,
+                }
+            )
+        for worksheet in document.worksheets:
+            questions = xlsx_review_questions(worksheet)
+            if not questions:
+                continue
+            total += len(questions)
+            applied += sum(
+                1
+                for question in questions
+                if question["resolution"] is not None
+                and question["resolution"]["status"] == "APPLIED"
+            )
+            groups.append(
+                {
+                    "locator": {
+                        "kind": "worksheet",
+                        "number": worksheet.worksheet_index,
+                        "label": (
+                            f"Worksheet {worksheet.worksheet_index}: "
+                            f"{worksheet.title}"
+                        ),
+                    },
+                    "title": worksheet.title,
+                    "artifact_path": worksheet.image_path,
                     "questions": questions,
                 }
             )
@@ -261,36 +350,59 @@ class RegistryService:
         async with lock:
             version = await self.repository.get_version(version_id)
             document = await self.normalized_document(version_id)
-            slide, question = self._locate_question(document, question_id)
+            locator_kind, item, question = self._locate_question(
+                document, question_id
+            )
             existing = question["resolution"]
             if existing is not None and existing["status"] == "APPLIED":
                 raise RegistryConflictError(
                     "this resolution has already been applied"
                 )
-            assert slide.review is not None
-            finding = slide.review.findings[question["finding_index"]]
+            assert item.review is not None
+            finding = item.review.findings[question["finding_index"]]
             try:
                 image_path = self._storage.review_artifact(
-                    version.file_path, slide.image_path
+                    version.file_path, item.image_path
                 )
             except (FileNotFoundError, ValueError) as exc:
                 raise RegistryConflictError(
-                    "the rendered slide image is unavailable"
+                    "the rendered review image is unavailable"
                 ) from exc
             started = perf_counter()
             try:
+                resolver = {
+                    "slide": self._resolution_provider.resolve_slide,
+                    "page": self._resolution_provider.resolve_page,
+                    "worksheet": self._resolution_provider.resolve_worksheet,
+                }[locator_kind]
+                locator_arguments = (
+                    {"slide_number": item.slide_number}
+                    if locator_kind == "slide"
+                    else (
+                        {"page_number": item.page_number}
+                        if locator_kind == "page"
+                        else {
+                            "worksheet_index": item.worksheet_index,
+                            "worksheet_title": item.title,
+                        }
+                    )
+                )
                 result = await asyncio.to_thread(
-                    self._resolution_provider.resolve_slide,
+                    resolver,
                     image_path,
-                    slide_number=slide.slide_number,
+                    **locator_arguments,
                     content_profile=document.content_profile
                     or "general_document",
-                    native_markdown=slide.native_markdown,
-                    current_markdown=self._current_review_markdown(slide),
+                    native_markdown=item.native_markdown,
+                    current_markdown=self._current_review_markdown(item),
                     finding=finding,
                     question=question["question"],
                     answer=cleaned_answer,
-                    prompt_version=self._resolution_prompt_version,
+                    prompt_version={
+                        "slide": self._resolution_prompt_version,
+                        "page": self._pdf_resolution_prompt_version,
+                        "worksheet": self._xlsx_resolution_prompt_version,
+                    }[locator_kind],
                 )
             except VisionProviderError as exc:
                 raise RegistryConflictError(
@@ -311,19 +423,25 @@ class RegistryService:
                 follow_up_question=result.follow_up_question,
                 provider=self._resolution_provider.name,
                 model=self._resolution_provider.model,
-                prompt_version=self._resolution_prompt_version,
+                prompt_version={
+                    "slide": self._resolution_prompt_version,
+                    "page": self._pdf_resolution_prompt_version,
+                    "worksheet": self._xlsx_resolution_prompt_version,
+                }[locator_kind],
                 response_hash=response_hash,
                 duration_ms=duration_ms,
             )
             updated_resolutions = [
-                item
-                for item in slide.human_resolutions
-                if item.question_id != question_id
+                resolution_item
+                for resolution_item in item.human_resolutions
+                if resolution_item.question_id != question_id
             ] + [resolution]
-            updated_slide = slide.model_copy(
+            updated_item = item.model_copy(
                 update={"human_resolutions": updated_resolutions}
             )
-            document = self._replace_slide(document, updated_slide)
+            document = self._replace_review_item(
+                document, locator_kind, updated_item
+            )
             await asyncio.to_thread(
                 self._persist_review_document, version.file_path, document
             )
@@ -336,12 +454,14 @@ class RegistryService:
         async with lock:
             version = await self.repository.get_version(version_id)
             document = await self.normalized_document(version_id)
-            slide, question = self._locate_question(document, question_id)
+            locator_kind, item, question = self._locate_question(
+                document, question_id
+            )
             current = next(
                 (
-                    item
-                    for item in slide.human_resolutions
-                    if item.question_id == question_id
+                    resolution_item
+                    for resolution_item in item.human_resolutions
+                    if resolution_item.question_id == question_id
                 ),
                 None,
             )
@@ -355,10 +475,14 @@ class RegistryService:
                 )
             applied = current.model_copy(update={"status": "APPLIED"})
             updated_resolutions = [
-                applied if item.question_id == question_id else item
-                for item in slide.human_resolutions
+                (
+                    applied
+                    if resolution_item.question_id == question_id
+                    else resolution_item
+                )
+                for resolution_item in item.human_resolutions
             ]
-            updated_slide = slide.model_copy(
+            updated_item = item.model_copy(
                 update={
                     "human_resolutions": updated_resolutions,
                     # Proposals are appended in generation order and each is
@@ -368,7 +492,9 @@ class RegistryService:
                     "combined_markdown": updated_resolutions[-1].resolved_markdown,
                 }
             )
-            document = self._replace_slide(document, updated_slide)
+            document = self._replace_review_item(
+                document, locator_kind, updated_item
+            )
             complete = self._all_questions_applied(document)
             await asyncio.to_thread(
                 self._persist_review_document, version.file_path, document
@@ -381,18 +507,65 @@ class RegistryService:
     def _locate_question(document: NormalizedDocument, question_id: str):
         for slide in document.slides:
             try:
-                return slide, find_review_question(slide, question_id)
+                return (
+                    "slide",
+                    slide,
+                    find_pptx_review_question(slide, question_id),
+                )
+            except KeyError:
+                continue
+        for page in document.pages:
+            try:
+                return (
+                    "page",
+                    page,
+                    find_pdf_review_question(page, question_id),
+                )
+            except KeyError:
+                continue
+        for worksheet in document.worksheets:
+            try:
+                return (
+                    "worksheet",
+                    worksheet,
+                    find_xlsx_review_question(worksheet, question_id),
+                )
             except KeyError:
                 continue
         raise RegistryNotFoundError(f"review question not found: {question_id}")
 
     @staticmethod
-    def _replace_slide(document: NormalizedDocument, updated_slide):
+    def _replace_review_item(
+        document: NormalizedDocument, locator_kind: str, updated_item
+    ):
+        if locator_kind == "page":
+            return document.model_copy(
+                update={
+                    "pages": [
+                        updated_item
+                        if page.page_number == updated_item.page_number
+                        else page
+                        for page in document.pages
+                    ]
+                }
+            )
+        if locator_kind == "worksheet":
+            return document.model_copy(
+                update={
+                    "worksheets": [
+                        updated_item
+                        if worksheet.worksheet_index
+                        == updated_item.worksheet_index
+                        else worksheet
+                        for worksheet in document.worksheets
+                    ]
+                }
+            )
         return document.model_copy(
             update={
                 "slides": [
-                    updated_slide
-                    if slide.slide_number == updated_slide.slide_number
+                    updated_item
+                    if slide.slide_number == updated_item.slide_number
                     else slide
                     for slide in document.slides
                 ]
@@ -400,20 +573,28 @@ class RegistryService:
         )
 
     @staticmethod
-    def _current_review_markdown(slide) -> str:
+    def _current_review_markdown(item) -> str:
         proposed = [
             resolution.resolved_markdown
-            for resolution in slide.human_resolutions
+            for resolution in item.human_resolutions
             if resolution.status == "PROPOSED"
         ]
-        return proposed[-1] if proposed else slide.combined_markdown
+        return proposed[-1] if proposed else item.combined_markdown
 
     @staticmethod
     def _all_questions_applied(document: NormalizedDocument) -> bool:
         questions = [
             question
             for slide in document.slides
-            for question in review_questions(slide)
+            for question in pptx_review_questions(slide)
+        ] + [
+            question
+            for page in document.pages
+            for question in pdf_review_questions(page)
+        ] + [
+            question
+            for worksheet in document.worksheets
+            for question in xlsx_review_questions(worksheet)
         ]
         return bool(questions) and all(
             question["resolution"] is not None
@@ -427,7 +608,7 @@ class RegistryService:
         self._storage.write_normalized(
             source_path, document.model_dump(mode="json")
         )
-        self._write_pptx_llm_report(source_path, document)
+        self._write_review_report(source_path, document)
 
     async def _run_extraction(self, version_id: UUID) -> ExtractionRunResponse:
         source = await self.repository.extraction_source(version_id)
@@ -441,26 +622,31 @@ class RegistryService:
         is_general_pdf = (
             suffix == ".pdf" and effective_document_type != "transcript"
         )
+        is_xlsx = suffix == ".xlsx"
         renderer_version = None
         vision_provider = None
         vision_model = None
         vision_prompt_version = None
-        if is_pptx or is_general_pdf:
+        if is_pptx or is_general_pdf or is_xlsx:
             renderer = (
                 self._extraction.pptx_renderer
                 if is_pptx
-                else self._extraction.pdf_renderer
+                else (
+                    self._extraction.pdf_renderer
+                    if is_general_pdf
+                    else self._extraction.xlsx_renderer
+                )
             )
             if renderer is not None:
                 renderer_version = renderer.version
             if self._extraction.vision_provider is not None:
                 vision_provider = self._extraction.vision_provider.name
                 vision_model = self._extraction.vision_provider.model
-            vision_prompt_version = (
-                self._extraction.vision_prompt_version
-                if is_pptx
-                else self._extraction.pdf_vision_prompt_version
-            )
+            vision_prompt_version = {
+                "pptx": self._extraction.vision_prompt_version,
+                "pdf": self._extraction.pdf_vision_prompt_version,
+                "xlsx": self._extraction.xlsx_vision_prompt_version,
+            }[suffix.removeprefix(".")]
         run = await self.repository.start_extraction(
             version_id,
             self._extraction.version,
@@ -486,7 +672,7 @@ class RegistryService:
                 }
             )
             await asyncio.to_thread(
-                self._write_pptx_llm_report, source["file_path"], normalized
+                self._write_review_report, source["file_path"], normalized
             )
             normalized_path = await asyncio.to_thread(
                 self._storage.write_normalized,
@@ -516,7 +702,7 @@ class RegistryService:
                     mode="json"
                 )
                 await asyncio.to_thread(
-                    self._write_pptx_llm_report,
+                    self._write_review_report,
                     source["file_path"],
                     partial_document,
                 )
@@ -546,13 +732,18 @@ class RegistryService:
                 error=f"unexpected extraction failure: {type(exc).__name__}",
             )
 
-    def _write_pptx_llm_report(
+    def _write_review_report(
         self, source_path: str, normalized: NormalizedDocument
     ) -> None:
-        if normalized.source_format != "pptx" or not normalized.slides:
-            return
-        report = build_pptx_llm_report(normalized)
-        self._storage.write_pptx_llm_report(source_path, report)
+        if normalized.source_format == "pptx" and normalized.slides:
+            report = build_pptx_llm_report(normalized)
+            self._storage.write_pptx_llm_report(source_path, report)
+        elif normalized.source_format == "pdf" and normalized.pages:
+            report = build_pdf_llm_report(normalized)
+            self._storage.write_pdf_llm_report(source_path, report)
+        elif normalized.source_format == "xlsx" and normalized.worksheets:
+            report = build_xlsx_review_report(normalized)
+            self._storage.write_xlsx_review_report(source_path, report)
 
     async def approve_version(self, version_id: UUID) -> DocumentVersionResponse:
         version = await self.repository.get_version(version_id)

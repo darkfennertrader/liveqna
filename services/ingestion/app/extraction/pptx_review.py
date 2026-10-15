@@ -35,6 +35,75 @@ def decide_slide_review(
     judge_result: SlideReviewResult,
     judge_provenance: SlideReviewProvenance,
 ) -> SlideReviewDecision:
+    return _decide_review(
+        vision=vision,
+        reconciliation=reconciliation,
+        judge_result=judge_result,
+        judge_provenance=judge_provenance,
+        version=REVIEW_VERSION,
+    )
+
+
+def decide_page_review(
+    *,
+    vision: SlideVisionResult,
+    reconciliation: SlideReconciliation,
+    judge_result: SlideReviewResult,
+    judge_provenance: SlideReviewProvenance,
+) -> SlideReviewDecision:
+    return _decide_review(
+        vision=vision,
+        reconciliation=reconciliation,
+        judge_result=judge_result,
+        judge_provenance=judge_provenance,
+        version="pdf-page-review-v1",
+    )
+
+
+def decide_worksheet_review(
+    *,
+    vision: SlideVisionResult,
+    reconciliation: SlideReconciliation,
+    judge_result: SlideReviewResult,
+    judge_provenance: SlideReviewProvenance,
+    deterministic_findings: list[SlideReviewDecisionFinding] | None = None,
+) -> SlideReviewDecision:
+    decision = _decide_review(
+        vision=vision,
+        reconciliation=reconciliation,
+        judge_result=judge_result,
+        judge_provenance=judge_provenance,
+        version="xlsx-worksheet-review-v1",
+    )
+    findings = _deduplicate(
+        [*(deterministic_findings or []), *decision.findings]
+    )
+    severity = max(
+        (finding.severity for finding in findings),
+        key=lambda value: _SEVERITY_RANK[value],
+        default="NONE",
+    )
+    return decision.model_copy(
+        update={
+            "findings": findings,
+            "severity": severity,
+            "status": (
+                "REVIEW_REQUIRED"
+                if _SEVERITY_RANK[severity] >= _SEVERITY_RANK["MEDIUM"]
+                else "AUTO_PASS"
+            ),
+        }
+    )
+
+
+def _decide_review(
+    *,
+    vision: SlideVisionResult,
+    reconciliation: SlideReconciliation,
+    judge_result: SlideReviewResult,
+    judge_provenance: SlideReviewProvenance,
+    version: str,
+) -> SlideReviewDecision:
     findings: list[SlideReviewDecisionFinding] = []
 
     for conflict in reconciliation.conflicts:
@@ -93,7 +162,7 @@ def decide_slide_review(
         else "AUTO_PASS"
     )
     return SlideReviewDecision(
-        version=REVIEW_VERSION,
+        version=version,
         status=status,
         severity=severity,
         findings=findings,
@@ -106,6 +175,26 @@ def failed_slide_review(message: str) -> SlideReviewDecision:
     finding = _system_finding(message)
     return SlideReviewDecision(
         version=REVIEW_VERSION,
+        status="REVIEW_REQUIRED",
+        severity=finding.severity,
+        findings=[finding],
+    )
+
+
+def failed_page_review(message: str) -> SlideReviewDecision:
+    finding = _system_finding(message)
+    return SlideReviewDecision(
+        version="pdf-page-review-v1",
+        status="REVIEW_REQUIRED",
+        severity=finding.severity,
+        findings=[finding],
+    )
+
+
+def failed_worksheet_review(message: str) -> SlideReviewDecision:
+    finding = _system_finding(message)
+    return SlideReviewDecision(
+        version="xlsx-worksheet-review-v1",
         status="REVIEW_REQUIRED",
         severity=finding.severity,
         findings=[finding],

@@ -1,0 +1,38 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#eef4ff","primaryTextColor":"#101828","primaryBorderColor":"#175cd3","lineColor":"#475467","secondaryColor":"#fef3f2","tertiaryColor":"#ecfdf3","fontFamily":"Arial"},"flowchart":{"curve":"basis","nodeSpacing":42,"rankSpacing":62,"htmlLabels":true}}}%%
+flowchart TB
+    A["<b>Upload XLSX</b><br/>What: store immutable source and hash<br/>Component: ingestion registry<br/>Script: app/service.py"]
+    B["<b>Validate OOXML package</b><br/>What: ZIP integrity, required parts, paths and resource limits<br/>Component: Python zipfile<br/>Script: app/extraction/xlsx_validation.py"]
+    C["<b>Workbook inventory</b><br/>What: sheets, visibility, tables, names, links, objects and workbook settings<br/>Component: openpyxl plus OOXML inventory<br/>Script: app/extraction/xlsx.py"]
+
+    A -->|"source.xlsx"| B
+    B -->|"validated package inventory"| C
+
+    C -->|"native path"| D["<b>Authoritative native extraction</b><br/>What: typed cells, coordinates, formulas, cached values, logical regions and chart sources<br/>Component: openpyxl<br/>Script: app/extraction/xlsx.py"]
+    C -->|"verification and visual path"| E["<b>Isolated Calc processing</b><br/>What: disable macros and link updates, recalculate a copy, export selected worksheets<br/>Component: LibreOffice Calc via UNO<br/>Scripts: scripts/xlsx_libreoffice.py and app/extraction/xlsx_renderer.py"]
+
+    E -->|"worksheets/recalculated.xlsx"| F["<b>Formula audit</b><br/>What: compare original cache with independent recalculation; retain both<br/>Component: deterministic comparison<br/>Script: app/extraction/xlsx.py"]
+    E -->|"worksheets/worksheet-NNNN.png"| G["<b>Independent visual extraction</b><br/>What: describe charts, dashboards, formatting, images and layout<br/>Component: configured multimodal LLM<br/>Scripts: app/vision/openai.py or app/vision/ollama.py"]
+
+    D -->|"native worksheet evidence"| H["<b>Deterministic reconciliation</b><br/>What: native cells remain authoritative; visual-only meaning is added; conflicts quarantined<br/>Component: element fusion<br/>Scripts: app/extraction/xlsx.py and app/extraction/pptx_reconcile.py"]
+    F -->|"formula status and deterministic findings"| H
+    G -->|"independent visual evidence"| H
+
+    H -->|"reconciled evidence"| I["<b>Independent judge</b><br/>What: check native, formula, rendered and reconciled evidence<br/>Component: configured multimodal judge<br/>Scripts: app/vision/* and app/extraction/pptx_review.py"]
+    I -->|"worksheet review decision"| J{"Material discrepancy?"}
+
+    J -->|"No: AUTO_PASS"| K["<b>Finalize normalization</b><br/>What: write common document schema with workbook, sheets, regions, cells, visuals and provenance<br/>Component: Pydantic schema and storage<br/>Scripts: app/extraction/models.py and app/storage.py"]
+    J -->|"Yes: NEEDS_REVIEW"| L["<b>Human worksheet review</b><br/>What: show only material questions grouped by worksheet/range<br/>Component: existing review UI<br/>Scripts: app/extraction/xlsx_report.py and xlsx_resolution.py"]
+    L -->|"XLSX-WORKSHEET-REVIEW-REPORT.md and human answers"| M["<b>Resolve with AI</b><br/>What: propose corrected worksheet Markdown grounded in the human answer<br/>Component: configured resolver LLM<br/>Scripts: app/service.py and app/vision/*"]
+    M -->|"applied resolution"| K
+    K -->|"normalized.json"| N["<b>End of this phase</b><br/>No chunking, embedding or Qdrant indexing"]
+
+    classDef source fill:#eef4ff,stroke:#175cd3,stroke-width:2px,color:#101828;
+    classDef native fill:#ecfdf3,stroke:#039855,stroke-width:2px,color:#101828;
+    classDef visual fill:#fffaeb,stroke:#dc6803,stroke-width:2px,color:#101828;
+    classDef review fill:#fef3f2,stroke:#d92d20,stroke-width:2px,color:#101828;
+    classDef output fill:#f4f3ff,stroke:#6938ef,stroke-width:2px,color:#101828;
+    class A,B,C source;
+    class D,F,H native;
+    class E,G,I visual;
+    class J,L,M review;
+    class K,N output;

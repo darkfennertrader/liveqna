@@ -980,8 +980,8 @@ function renderIngestionVersion(documentRecord, version, versionCount, showDocum
   const processing = (detail?.version?.processing_status || version.processing_status).toLowerCase();
   const lifecycle = (detail?.version?.status || version.status).toLowerCase();
   const active = processing === "queued" || processing === "running";
-  const isPresentation = extraction?.source_format === "pptx"
-    || documentRecord.title.toLowerCase().endsWith(".pptx");
+  const isReviewableDocument = ["pptx", "pdf"].includes(extraction?.source_format)
+    || /\.(pptx|pdf)$/i.test(documentRecord.title);
   const reviewRequired = processing === "needs_review";
   const passed = processing === "ready";
   const card = document.createElement("div");
@@ -1068,7 +1068,7 @@ function renderIngestionVersion(documentRecord, version, versionCount, showDocum
     );
     actions.append(accept, resolve, reingest);
   } else if (!deleting && ["ready", "needs_review"].includes(processing)) {
-    if (isPresentation) {
+    if (isReviewableDocument) {
       const report = document.createElement("button");
       report.textContent = "Open review report";
       report.addEventListener("click", () => {

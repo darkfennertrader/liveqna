@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 from docx import Document
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
@@ -29,12 +30,18 @@ from app.extraction.pptx_report import (
     build_pptx_review_report,
 )
 from app.extraction.pdf_renderer import (
-    PdftoppmPdfRenderer,
+    PyMuPdfRenderer,
     RenderedPage,
 )
+from app.extraction.pdf_report import build_pdf_llm_report
+from app.extraction.xlsx_report import build_xlsx_review_report
 from app.extraction.pptx_renderer import (
     LibreOfficePptxRenderer,
     RenderedSlide,
+)
+from app.extraction.xlsx_renderer import (
+    RenderedWorksheet,
+    XlsxRenderResult,
 )
 
 
@@ -86,6 +93,49 @@ class FakePdfRenderer:
         return rendered
 
 
+class FakeXlsxRenderer:
+    version = "fake-xlsx-renderer-v1"
+
+    def render(
+        self, source: Path, worksheet_indexes: list[int]
+    ) -> XlsxRenderResult:
+        directory = source.parent / "worksheets"
+        directory.mkdir(exist_ok=True)
+        recalculated = directory / "recalculated.xlsx"
+        workbook = load_workbook(source, data_only=False)
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if cell.data_type == "f":
+                        cell.value = 3
+        workbook.save(recalculated)
+        workbook.close()
+        rendered = []
+        source_workbook = load_workbook(source, read_only=True)
+        try:
+            for worksheet_index in worksheet_indexes:
+                title = source_workbook.worksheets[worksheet_index - 1].title
+                path = directory / f"worksheet-{worksheet_index:04d}.png"
+                path.write_bytes(f"fake-xlsx-{worksheet_index}".encode())
+                rendered.append(
+                    RenderedWorksheet(
+                        worksheet_index=worksheet_index,
+                        title=title,
+                        path=path,
+                        relative_path=f"worksheets/{path.name}",
+                        content_hash=digest(path),
+                        page_count=1,
+                        pages_truncated=False,
+                    )
+                )
+        finally:
+            source_workbook.close()
+        return XlsxRenderResult(
+            worksheets=rendered,
+            recalculated_workbook=recalculated,
+        )
+
+
 class FakeVisionProvider:
     name = "fake"
     model = "fake-vision-v1"
@@ -101,6 +151,10 @@ class FakeVisionProvider:
         assert image_path.is_file()
         return self._result()
 
+    def analyze_worksheet(self, image_path: Path, **kwargs) -> SlideVisionResult:
+        assert image_path.is_file()
+        return self._result()
+
     def review_slide(self, image_path: Path, **kwargs) -> SlideReviewResult:
         assert image_path.is_file()
         return SlideReviewResult(
@@ -113,6 +167,12 @@ class FakeVisionProvider:
                 )
             ],
         )
+
+    def review_page(self, image_path: Path, **kwargs) -> SlideReviewResult:
+        return self.review_slide(image_path, **kwargs)
+
+    def review_worksheet(self, image_path: Path, **kwargs) -> SlideReviewResult:
+        return self.review_slide(image_path, **kwargs)
 
     def _result(self) -> SlideVisionResult:
         return SlideVisionResult(
@@ -152,6 +212,7 @@ def hybrid_pipeline(*, material_discrepancy: bool = False) -> ExtractionPipeline
     return ExtractionPipeline(
         pdf_renderer=FakePdfRenderer(),
         pptx_renderer=FakeRenderer(),
+        xlsx_renderer=FakeXlsxRenderer(),
         vision_provider=FakeVisionProvider(
             material_discrepancy=material_discrepancy
         ),
@@ -265,6 +326,65 @@ def test_xlsx_extraction_retains_worksheet_and_cell_ranges(tmp_path: Path) -> No
     assert normalized.blocks[1].source.cell_range == "A1:B1"
     assert normalized.quality.status == "WARNING"
     assert normalized.quality.warnings == ["worksheets without values: Empty"]
+    assert normalized.schema_version == "1.7"
+    assert len(normalized.worksheets) == 1
+    assert normalized.worksheets[0].review.status == "AUTO_PASS"
+    assert normalized.worksheets[0].regions[0].cell_range == "A1:B2"
+
+
+def test_xlsx_declared_tables_take_precedence_over_detected_regions(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tables.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Services"
+    sheet.append(["Service", "Cloud"])
+    sheet.append(["Qdrant", "Local"])
+    table = Table(displayName="ServicesTable", ref="A1:B2")
+    table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2")
+    sheet.add_table(table)
+    workbook.save(path)
+
+    normalized = extract(path)
+
+    worksheet = normalized.worksheets[0]
+    assert worksheet.table_names == ["ServicesTable"]
+    assert len(worksheet.regions) == 1
+    assert worksheet.regions[0].kind == "excel_table"
+    assert worksheet.regions[0].name == "ServicesTable"
+
+
+def test_xlsx_formula_without_native_cache_requires_human_review(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "formula.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Totals"
+    sheet.append(["Amount", "Total"])
+    sheet.append([1, "=SUM(A2:A3)"])
+    sheet.append([2, None])
+    workbook.save(path)
+
+    with pytest.raises(ExtractionFailure) as raised:
+        hybrid_pipeline().extract(
+            path, path.name, "official", digest(path), "financial_model"
+        )
+
+    assert raised.value.code == "XLSX_REVIEW_REQUIRED"
+    assert raised.value.partial_document is not None
+    worksheet = raised.value.partial_document.worksheets[0]
+    formula = next(cell for cell in worksheet.cells if cell.formula)
+    assert formula.cached_value is None
+    assert formula.recalculated_value == 3
+    assert formula.formula_status == "MISSING_CACHE"
+    assert worksheet.image_path == "worksheets/worksheet-0001.png"
+    assert worksheet.review.status == "REVIEW_REQUIRED"
+    report = build_xlsx_review_report(raised.value.partial_document)
+    assert "## Worksheet 1: Totals" in report
+    assert "Formula audit" in report
+    assert "Human resolution questions" in report
 
 
 def test_pptx_extraction_retains_slide_text_tables_and_notes(
@@ -296,7 +416,7 @@ def test_pptx_extraction_retains_slide_text_tables_and_notes(
     assert normalized.blocks[2].text.startswith("| Layer | Purpose |")
     assert len(normalized.slides) == 1
     normalized_slide = normalized.slides[0]
-    assert normalized.schema_version == "1.5"
+    assert normalized.schema_version == "1.7"
     assert normalized_slide.image_path == "slides/slide-0001.png"
     assert normalized_slide.vision_provenance.provider == "fake"
     assert normalized_slide.native_elements
@@ -428,9 +548,15 @@ def test_pdf_extraction_retains_page_numbers(tmp_path: Path) -> None:
     document.drawString(72, 750, "Second page decision")
     document.save()
 
-    normalized = extract(path)
+    normalized = hybrid_pipeline().extract(
+        path, path.name, "official", digest(path), "general_document"
+    )
 
     assert {block.source.page for block in normalized.blocks} == {1, 2}
+    assert [page.page_number for page in normalized.pages] == [1, 2]
+    assert all(page.native_elements for page in normalized.pages)
+    assert all(page.reconciliation is not None for page in normalized.pages)
+    assert all(page.review.status == "AUTO_PASS" for page in normalized.pages)
     assert normalized.quality.status == "PASS"
 
 
@@ -461,7 +587,7 @@ def test_pdf_transcript_retains_source_metadata_without_inventing_turns(
     assert all(block.source.timestamp is None for block in normalized.blocks)
 
 
-def test_visual_pdf_page_is_selectively_enriched(tmp_path: Path) -> None:
+def test_every_pdf_page_is_independently_enriched_and_reviewed(tmp_path: Path) -> None:
     path = tmp_path / "architecture.pdf"
     image_path = tmp_path / "diagram.png"
     Image.new("RGB", (1200, 700), color="white").save(image_path)
@@ -476,18 +602,45 @@ def test_visual_pdf_page_is_selectively_enriched(tmp_path: Path) -> None:
 
     assert [page.page_number for page in normalized.pages] == [1]
     assert normalized.pages[0].selection_reasons == [
-        "image_dominant_low_text"
+        "all_pages_quality_pipeline"
     ]
     assert normalized.pages[0].image_path == "pages/page-0001.png"
     assert normalized.pages[0].vision_provenance.provider == "fake"
+    assert normalized.pages[0].native_elements
+    assert normalized.pages[0].reconciliation is not None
+    assert normalized.pages[0].review is not None
+    assert normalized.pages[0].review.status == "AUTO_PASS"
     assert "## Visual evidence" in normalized.pages[0].combined_markdown
+    report = build_pdf_llm_report(normalized)
+    assert "## Page 1" in report
+    assert "![Rendered page 1](pages/page-0001.png)" in report
+    assert "### Independent judge" in report
+    assert "**AUTO_PASS**" in report
 
 
-@pytest.mark.skipif(
-    shutil.which("pdftoppm") is None,
-    reason="pdftoppm is required",
-)
-def test_pdf_renderer_creates_stable_selected_page_pngs(tmp_path: Path) -> None:
+def test_pdf_material_discrepancy_preserves_reconciled_partial_output(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "review.pdf"
+    document = canvas.Canvas(str(path))
+    document.drawString(72, 750, "Native value 42")
+    document.save()
+
+    with pytest.raises(ExtractionFailure) as raised:
+        hybrid_pipeline(material_discrepancy=True).extract(
+            path, path.name, "official", digest(path), "general_document"
+        )
+
+    assert raised.value.code == "PDF_REVIEW_REQUIRED"
+    assert raised.value.partial_document is not None
+    page = raised.value.partial_document.pages[0]
+    assert page.review is not None
+    assert page.review.status == "REVIEW_REQUIRED"
+    assert page.reconciliation is not None
+    assert page.reconciliation.conflicts == ["A material wording mismatch"]
+
+
+def test_pymupdf_renderer_creates_stable_selected_page_pngs(tmp_path: Path) -> None:
     path = tmp_path / "render.pdf"
     document = canvas.Canvas(str(path))
     document.drawString(72, 750, "Page one")
@@ -495,7 +648,7 @@ def test_pdf_renderer_creates_stable_selected_page_pngs(tmp_path: Path) -> None:
     document.drawString(72, 750, "Page two")
     document.save()
 
-    renderer = PdftoppmPdfRenderer(timeout_seconds=60)
+    renderer = PyMuPdfRenderer(dpi=144)
     first = renderer.render(path, 2, [2])
     second = renderer.render(path, 2, [2])
 

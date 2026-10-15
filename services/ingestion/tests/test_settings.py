@@ -46,9 +46,15 @@ def test_settings_read_ingestion_environment(monkeypatch, tmp_path: Path) -> Non
     assert settings.resolver_provider == "openai"
     assert settings.resolver_model == "configurable-resolver-model"
     assert settings.resolver_temperature == 0.3
-    assert settings.pdf_pdftoppm_binary == "pdftoppm"
     assert settings.pdf_render_dpi == 144
-    assert settings.pdf_vision_prompt_version == "pdf-page-v1"
+    assert settings.pdf_vision_prompt_version == "pdf-page-v2"
+    assert settings.pdf_review_prompt_version == "pdf-page-review-v1"
+    assert settings.pdf_resolver_prompt_version == "pdf-human-resolution-v1"
+    assert settings.xlsx_visual_mode == "selective"
+    assert settings.xlsx_vision_prompt_version == "xlsx-worksheet-v1"
+    assert settings.xlsx_review_prompt_version == "xlsx-worksheet-review-v1"
+    assert settings.xlsx_resolver_prompt_version == "xlsx-human-resolution-v1"
+    assert settings.xlsx_max_cells == 1_000_000
     assert documents.is_dir()
     assert models.is_dir()
     assert review_runs.is_dir()

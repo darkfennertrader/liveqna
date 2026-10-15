@@ -38,7 +38,16 @@ class VisionProvider(Protocol):
         *,
         page_number: int,
         content_profile: str,
-        native_markdown: str,
+        prompt_version: str,
+    ) -> SlideVisionResult: ...
+
+    def analyze_worksheet(
+        self,
+        image_path: Path,
+        *,
+        worksheet_index: int,
+        worksheet_title: str,
+        content_profile: str,
         prompt_version: str,
     ) -> SlideVisionResult: ...
 
@@ -61,6 +70,33 @@ class SlideReviewProvider(Protocol):
         prompt_version: str,
     ) -> SlideReviewResult: ...
 
+    def review_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        native_elements: list[dict[str, Any]],
+        vision: SlideVisionResult,
+        reconciliation: SlideReconciliation,
+        prompt_version: str,
+    ) -> SlideReviewResult: ...
+
+    def review_worksheet(
+        self,
+        image_path: Path,
+        *,
+        worksheet_index: int,
+        worksheet_title: str,
+        content_profile: str,
+        native_markdown: str,
+        native_elements: list[dict[str, Any]],
+        vision: SlideVisionResult,
+        reconciliation: SlideReconciliation,
+        prompt_version: str,
+    ) -> SlideReviewResult: ...
+
 
 @runtime_checkable
 class SlideResolutionProvider(Protocol):
@@ -72,6 +108,35 @@ class SlideResolutionProvider(Protocol):
         image_path: Path,
         *,
         slide_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult: ...
+
+    def resolve_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult: ...
+
+    def resolve_worksheet(
+        self,
+        image_path: Path,
+        *,
+        worksheet_index: int,
+        worksheet_title: str,
         content_profile: str,
         native_markdown: str,
         current_markdown: str,

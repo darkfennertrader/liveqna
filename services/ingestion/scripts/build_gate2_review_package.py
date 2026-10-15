@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from app.extraction.errors import ExtractionFailure
 from app.extraction.models import NormalizedDocument, NormalizedSlide
 from app.extraction.pptx import extract_native_slide_elements
-from app.extraction.pdf_renderer import PdftoppmPdfRenderer
+from app.extraction.pdf_renderer import PyMuPdfRenderer
 from app.extraction.pipeline import ExtractionPipeline
 from app.extraction.pptx_link import link_slides
 from app.extraction.pptx_report import (
@@ -150,7 +150,7 @@ def _merge_pptx_sample(
             [NormalizedSlide.model_validate(slide) for slide in upgraded_slides]
         )
     ]
-    normalized["schema_version"] = "1.5"
+    normalized["schema_version"] = "1.6"
     normalized["quality"]["status"] = "WARNING"
     normalized["quality"]["warnings"].append(
         "Gate 2 contains matching native and visual output only for slides "
@@ -162,11 +162,7 @@ def _merge_pptx_sample(
 
 def _pipeline(settings: Settings) -> ExtractionPipeline:
     return ExtractionPipeline(
-        pdf_renderer=PdftoppmPdfRenderer(
-            pdftoppm_binary=settings.pdf_pdftoppm_binary,
-            dpi=settings.pdf_render_dpi,
-            timeout_seconds=settings.pdf_render_timeout_seconds,
-        ),
+        pdf_renderer=PyMuPdfRenderer(dpi=settings.pdf_render_dpi),
         pptx_renderer=LibreOfficePptxRenderer(
             soffice_binary=settings.pptx_soffice_binary,
             pdftoppm_binary=settings.pptx_pdftoppm_binary,

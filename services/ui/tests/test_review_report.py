@@ -23,6 +23,30 @@ def test_review_report_renders_markdown_and_local_slide_images() -> None:
     assert "Show technical extraction report" in rendered
 
 
+def test_review_report_routes_local_pdf_page_images() -> None:
+    rendered = render_review_report(
+        "version-pdf",
+        "# PDF review\n\n![Page 2](pages/page-0002.png)",
+    )
+
+    assert (
+        "/api/ingestion/versions/version-pdf/review-artifacts/"
+        "pages/page-0002.png"
+    ) in rendered
+
+
+def test_review_report_routes_local_xlsx_worksheet_images() -> None:
+    rendered = render_review_report(
+        "version-xlsx",
+        "# XLSX review\n\n![Worksheet](worksheets/worksheet-0002.png)",
+    )
+
+    assert (
+        "/api/ingestion/versions/version-xlsx/review-artifacts/"
+        "worksheets/worksheet-0002.png"
+    ) in rendered
+
+
 def test_review_report_escapes_embedded_html() -> None:
     rendered = render_review_report("version-123", "<script>alert(1)</script>")
 

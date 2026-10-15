@@ -7,8 +7,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fonts-dejavu-core \
         fonts-liberation \
+        libreoffice-calc \
         libreoffice-impress \
         poppler-utils \
+        python3-uno \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

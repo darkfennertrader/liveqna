@@ -1,0 +1,46 @@
+%%{init: {"theme": "base", "themeVariables": {"background": "#ffffff", "primaryTextColor": "#172033", "lineColor": "#475467", "fontFamily": "Arial"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart TB
+    A["PDF uploaded<br/><b>Input:</b> source.pdf"] --> B["Validate source<br/><b>Component:</b> PyMuPDF<br/><b>Script:</b> extraction/pdf.py"]
+    B --> C{"Valid, unencrypted PDF?"}
+    C -- "No" --> X["FAILED<br/>corrupt or encrypted document"]
+    C -- "Yes" --> D{"Native text exists<br/>on every page?"}
+    D -- "No" --> OCR["OCR<br/><b>TO BE IMPLEMENTED</b><br/>Current result: NEEDS REVIEW"]
+    D -- "Yes" --> LOOP["Process every page independently"]
+
+    LOOP --> N1["Extract native layout evidence<br/><b>What:</b> exact text, tables, images,<br/>vector regions, reading order, bounding boxes<br/><b>Component:</b> PyMuPDF<br/><b>Script:</b> extraction/pdf.py"]
+    LOOP --> V1["Render complete page to PNG<br/><b>Component:</b> PyMuPDF<br/><b>Script:</b> extraction/pdf_renderer.py"]
+
+    N1 --> NE["Native page evidence<br/><b>Output:</b> native elements + native Markdown<br/>with stable IDs and page locators"]
+    V1 --> V2["Independent visual extraction - Call 1<br/><b>What:</b> transcription, tables, diagram meaning,<br/>labels, regions, uncertainty<br/><b>Component:</b> swappable multimodal LLM<br/><b>Scripts:</b> vision/* + vision/prompt.py"]
+    V2 --> VE["Visual page evidence<br/><b>Output:</b> structured model result + provenance"]
+
+    NE --> R["Deterministic reconciliation<br/><b>What:</b> global match by text, geometry,<br/>element type and reading order;<br/>native wording wins; conflicts quarantined<br/><b>Script:</b> extraction/pptx_reconcile.py::reconcile_page"]
+    VE --> R
+    R --> RE["Reconciled page<br/><b>Output:</b> retrieval Markdown + audit alignments"]
+
+    NE --> J["Independent judge - Call 2<br/><b>What:</b> compare image, native evidence,<br/>visual result and reconciliation<br/><b>Component:</b> swappable multimodal LLM<br/><b>Scripts:</b> vision/* + extraction/pptx_review.py"]
+    VE --> J
+    RE --> J
+    V1 --> J
+    J --> G{"Review decision"}
+    G -- "AUTO PASS" --> L["Link pages<br/><b>What:</b> previous/next, references,<br/>continued tables and same-topic links<br/><b>Script:</b> extraction/pdf_link.py"]
+    G -- "MEDIUM / HIGH / CRITICAL" --> H["Human review questions<br/><b>What:</b> one answerable question per finding<br/><b>Scripts:</b> extraction/pdf_resolution.py<br/>and review UI"]
+    H --> HR["Human answer + resolver LLM<br/><b>What:</b> propose and apply corrected page Markdown<br/><b>Scripts:</b> service.py + vision/*"]
+    HR --> L
+    L --> OUT["Canonical normalized document<br/><b>Output:</b> normalized.json<br/>native + visual + reconciliation + judge +<br/>human resolutions + relationships + provenance"]
+
+    classDef source fill:#eaf2ff,stroke:#175cd3,stroke-width:2px,color:#172033;
+    classDef process fill:#f8fafc,stroke:#475467,stroke-width:1.5px,color:#172033;
+    classDef evidence fill:#ecfdf3,stroke:#039855,stroke-width:1.5px,color:#172033;
+    classDef decision fill:#fff7d6,stroke:#d97706,stroke-width:2px,color:#172033;
+    classDef review fill:#fff4ed,stroke:#f97316,stroke-width:2px,color:#172033;
+    classDef blocked fill:#fee4e2,stroke:#d92d20,stroke-width:2px,color:#172033;
+    classDef output fill:#e0f2fe,stroke:#0369a1,stroke-width:2px,color:#172033;
+
+    class A source;
+    class B,LOOP,N1,V1,V2,R,J,L process;
+    class NE,VE,RE evidence;
+    class C,D,G decision;
+    class H,HR review;
+    class X,OCR blocked;
+    class OUT output;

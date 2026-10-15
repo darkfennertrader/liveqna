@@ -44,12 +44,43 @@ async def test_version_storage_uses_stable_ids_and_hashes_content(tmp_path) -> N
         "# PPTX LLM slide report\n"
     )
 
+    pdf_report_path = storage.write_pdf_llm_report(
+        stored.relative_path, "# PDF LLM page report\n"
+    )
+    assert pdf_report_path.endswith("/PDF-LLM-PAGE-REPORT.md")
+    assert storage.read_pdf_llm_report(stored.relative_path) == (
+        "# PDF LLM page report\n"
+    )
+    xlsx_report_path = storage.write_xlsx_review_report(
+        stored.relative_path, "# XLSX worksheet review report\n"
+    )
+    assert xlsx_report_path.endswith("/XLSX-WORKSHEET-REVIEW-REPORT.md")
+    assert storage.read_xlsx_review_report(stored.relative_path) == (
+        "# XLSX worksheet review report\n"
+    )
+
     slide = storage.absolute_path(stored.relative_path).parent / "slides" / "slide-0001.png"
     slide.parent.mkdir()
     slide.write_bytes(b"png")
     assert storage.review_artifact(
         stored.relative_path, "slides/slide-0001.png"
     ) == slide
+    page = storage.absolute_path(stored.relative_path).parent / "pages" / "page-0001.png"
+    page.parent.mkdir()
+    page.write_bytes(b"png")
+    assert storage.review_artifact(
+        stored.relative_path, "pages/page-0001.png"
+    ) == page
+    worksheet = (
+        storage.absolute_path(stored.relative_path).parent
+        / "worksheets"
+        / "worksheet-0001.png"
+    )
+    worksheet.parent.mkdir(exist_ok=True)
+    worksheet.write_bytes(b"png")
+    assert storage.review_artifact(
+        stored.relative_path, "worksheets/worksheet-0001.png"
+    ) == worksheet
     with pytest.raises(ValueError, match="escapes"):
         storage.review_artifact(stored.relative_path, "../source.pdf")
     with pytest.raises(FileNotFoundError):

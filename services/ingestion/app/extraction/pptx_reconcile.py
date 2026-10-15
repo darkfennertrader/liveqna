@@ -11,12 +11,14 @@ from scipy.optimize import linear_sum_assignment
 
 from .models import (
     NormalizedSlide,
+    PageNativeElement,
     SlideBoundingBox,
     SlideEvidenceAlignment,
     SlideNativeElement,
     SlideReconciliation,
     SlideVisionResult,
     SlideVisualElement,
+    WorksheetNativeElement,
 )
 
 
@@ -49,6 +51,62 @@ def reconcile_slide(
     vision: SlideVisionResult,
 ) -> SlideReconciliation:
     """Globally align native and rendered evidence without altering either."""
+
+    return _reconcile_elements(
+        native_markdown=native_markdown,
+        native_elements=native_elements,
+        supplementary_markdown=speaker_notes,
+        vision=vision,
+        version=RECONCILIATION_VERSION,
+    )
+
+
+def reconcile_page(
+    *,
+    native_markdown: str,
+    native_elements: list[PageNativeElement],
+    vision: SlideVisionResult,
+) -> SlideReconciliation:
+    """Reconcile one PDF page using the same evidence rules as a slide."""
+
+    return _reconcile_elements(
+        native_markdown=native_markdown,
+        native_elements=native_elements,
+        supplementary_markdown=None,
+        vision=vision,
+        version="pdf-element-fusion-v1",
+    )
+
+
+def reconcile_worksheet(
+    *,
+    native_markdown: str,
+    native_elements: list[WorksheetNativeElement],
+    vision: SlideVisionResult,
+) -> SlideReconciliation:
+    """Reconcile one rendered worksheet while retaining native cell authority."""
+
+    return _reconcile_elements(
+        native_markdown=native_markdown,
+        native_elements=native_elements,
+        supplementary_markdown=None,
+        vision=vision,
+        version="xlsx-element-fusion-v1",
+    )
+
+
+def _reconcile_elements(
+    *,
+    native_markdown: str,
+    native_elements: (
+        list[SlideNativeElement]
+        | list[PageNativeElement]
+        | list[WorksheetNativeElement]
+    ),
+    supplementary_markdown: str | None,
+    vision: SlideVisionResult,
+    version: str,
+) -> SlideReconciliation:
 
     if not native_elements and native_markdown.strip():
         native_elements = [
@@ -175,7 +233,7 @@ def reconcile_slide(
         )
 
     return SlideReconciliation(
-        version=RECONCILIATION_VERSION,
+        version=version,
         alignments=alignments,
         suppressed_duplicate_visual_ids=suppressed,
         quarantined_conflict_visual_ids=quarantined,
@@ -185,7 +243,7 @@ def reconcile_slide(
             native_markdown=native_markdown,
             included_visual_elements=included_elements,
             labels=vision.labels,
-            speaker_notes=speaker_notes,
+            speaker_notes=supplementary_markdown,
         ),
     )
 

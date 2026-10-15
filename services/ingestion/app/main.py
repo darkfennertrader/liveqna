@@ -14,8 +14,10 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from .database import Database
 from .errors import RegistryConflictError, RegistryNotFoundError
 from .extraction import ExtractionPipeline, NormalizedDocument
-from .extraction.pdf_renderer import PdftoppmPdfRenderer
+from .extraction.pdf_renderer import PyMuPdfRenderer
 from .extraction.pptx_renderer import LibreOfficePptxRenderer
+from .extraction.xlsx_renderer import LibreOfficeXlsxRenderer
+from .extraction.xlsx_validation import XlsxPackageLimits
 from .qdrant import QdrantProbe
 from .repository import RegistryRepository
 from .review_cache import clear_review_runs_cache
@@ -70,26 +72,43 @@ async def lifespan(app: FastAPI):
         VersionStorage(settings.document_storage_dir),
         settings.approved_by,
         ExtractionPipeline(
-            pdf_renderer=PdftoppmPdfRenderer(
-                pdftoppm_binary=settings.pdf_pdftoppm_binary,
-                dpi=settings.pdf_render_dpi,
-                timeout_seconds=settings.pdf_render_timeout_seconds,
-            ),
+            pdf_renderer=PyMuPdfRenderer(dpi=settings.pdf_render_dpi),
             pptx_renderer=LibreOfficePptxRenderer(
                 soffice_binary=settings.pptx_soffice_binary,
                 pdftoppm_binary=settings.pptx_pdftoppm_binary,
                 dpi=settings.pptx_render_dpi,
                 timeout_seconds=settings.pptx_render_timeout_seconds,
             ),
+            xlsx_renderer=LibreOfficeXlsxRenderer(
+                soffice_binary=settings.xlsx_soffice_binary,
+                uno_python=settings.xlsx_uno_python,
+                helper_script=settings.xlsx_helper_script,
+                dpi=settings.xlsx_render_dpi,
+                timeout_seconds=settings.xlsx_render_timeout_seconds,
+                max_pages_per_sheet=settings.xlsx_max_render_pages_per_sheet,
+            ),
             vision_provider=create_vision_provider(settings),
             review_provider=create_review_provider(settings),
             pdf_vision_prompt_version=settings.pdf_vision_prompt_version,
+            pdf_review_prompt_version=settings.pdf_review_prompt_version,
             vision_prompt_version=settings.vision_prompt_version,
             review_prompt_version=settings.review_prompt_version,
+            xlsx_vision_prompt_version=settings.xlsx_vision_prompt_version,
+            xlsx_review_prompt_version=settings.xlsx_review_prompt_version,
+            xlsx_package_limits=XlsxPackageLimits(
+                max_entries=settings.xlsx_max_package_entries,
+                max_uncompressed_bytes=settings.xlsx_max_uncompressed_bytes,
+                max_compression_ratio=settings.xlsx_max_compression_ratio,
+                max_sheets=settings.xlsx_max_sheets,
+                max_cells=settings.xlsx_max_cells,
+            ),
+            xlsx_visual_mode=settings.xlsx_visual_mode,
             vision_max_concurrency=settings.vision_max_concurrency,
         ),
         create_resolution_provider(settings),
         settings.resolver_prompt_version,
+        settings.pdf_resolver_prompt_version,
+        settings.xlsx_resolver_prompt_version,
         qdrant,
         settings.qdrant_collection,
     )

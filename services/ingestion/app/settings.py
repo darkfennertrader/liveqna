@@ -28,14 +28,29 @@ class Settings:
     database_pool_max_size: int
     dependency_timeout_seconds: float
     approved_by: str
-    pdf_pdftoppm_binary: str
     pdf_render_dpi: int
-    pdf_render_timeout_seconds: float
     pdf_vision_prompt_version: str
+    pdf_review_prompt_version: str
+    pdf_resolver_prompt_version: str
     pptx_soffice_binary: str
     pptx_pdftoppm_binary: str
     pptx_render_dpi: int
     pptx_render_timeout_seconds: float
+    xlsx_soffice_binary: str
+    xlsx_uno_python: str
+    xlsx_helper_script: str
+    xlsx_render_dpi: int
+    xlsx_render_timeout_seconds: float
+    xlsx_max_render_pages_per_sheet: int
+    xlsx_visual_mode: str
+    xlsx_vision_prompt_version: str
+    xlsx_review_prompt_version: str
+    xlsx_resolver_prompt_version: str
+    xlsx_max_package_entries: int
+    xlsx_max_uncompressed_bytes: int
+    xlsx_max_compression_ratio: float
+    xlsx_max_sheets: int
+    xlsx_max_cells: int
     vision_provider: str
     vision_model: str
     vision_temperature: float | None
@@ -160,20 +175,22 @@ class Settings:
                 "INGESTION_APPROVED_BY", "local-owner"
             ).strip()
             or "local-owner",
-            pdf_pdftoppm_binary=os.environ.get(
-                "INGESTION_PDF_PDFTOPPM_BINARY", "pdftoppm"
-            ).strip()
-            or "pdftoppm",
             pdf_render_dpi=int(
                 os.environ.get("INGESTION_PDF_RENDER_DPI", "144")
             ),
-            pdf_render_timeout_seconds=float(
-                os.environ.get("INGESTION_PDF_RENDER_TIMEOUT_SECONDS", "180")
-            ),
             pdf_vision_prompt_version=os.environ.get(
-                "INGESTION_PDF_VISION_PROMPT_VERSION", "pdf-page-v1"
+                "INGESTION_PDF_VISION_PROMPT_VERSION", "pdf-page-v2"
             ).strip()
-            or "pdf-page-v1",
+            or "pdf-page-v2",
+            pdf_review_prompt_version=os.environ.get(
+                "INGESTION_PDF_JUDGE_PROMPT_VERSION", "pdf-page-review-v1"
+            ).strip()
+            or "pdf-page-review-v1",
+            pdf_resolver_prompt_version=os.environ.get(
+                "INGESTION_PDF_RESOLVER_PROMPT_VERSION",
+                "pdf-human-resolution-v1",
+            ).strip()
+            or "pdf-human-resolution-v1",
             pptx_soffice_binary=os.environ.get(
                 "INGESTION_PPTX_SOFFICE_BINARY", "soffice"
             ).strip()
@@ -187,6 +204,64 @@ class Settings:
             ),
             pptx_render_timeout_seconds=float(
                 os.environ.get("INGESTION_PPTX_RENDER_TIMEOUT_SECONDS", "180")
+            ),
+            xlsx_soffice_binary=os.environ.get(
+                "INGESTION_XLSX_SOFFICE_BINARY", "soffice"
+            ).strip()
+            or "soffice",
+            xlsx_uno_python=os.environ.get(
+                "INGESTION_XLSX_UNO_PYTHON", "/usr/bin/python3"
+            ).strip()
+            or "/usr/bin/python3",
+            xlsx_helper_script=os.environ.get(
+                "INGESTION_XLSX_HELPER_SCRIPT",
+                "/app/scripts/xlsx_libreoffice.py",
+            ).strip()
+            or "/app/scripts/xlsx_libreoffice.py",
+            xlsx_render_dpi=int(
+                os.environ.get("INGESTION_XLSX_RENDER_DPI", "144")
+            ),
+            xlsx_render_timeout_seconds=float(
+                os.environ.get("INGESTION_XLSX_RENDER_TIMEOUT_SECONDS", "180")
+            ),
+            xlsx_max_render_pages_per_sheet=int(
+                os.environ.get(
+                    "INGESTION_XLSX_MAX_RENDER_PAGES_PER_SHEET", "8"
+                )
+            ),
+            xlsx_visual_mode=os.environ.get(
+                "INGESTION_XLSX_VISUAL_MODE", "selective"
+            ).strip().lower(),
+            xlsx_vision_prompt_version=os.environ.get(
+                "INGESTION_XLSX_VISION_PROMPT_VERSION", "xlsx-worksheet-v1"
+            ).strip()
+            or "xlsx-worksheet-v1",
+            xlsx_review_prompt_version=os.environ.get(
+                "INGESTION_XLSX_JUDGE_PROMPT_VERSION",
+                "xlsx-worksheet-review-v1",
+            ).strip()
+            or "xlsx-worksheet-review-v1",
+            xlsx_resolver_prompt_version=os.environ.get(
+                "INGESTION_XLSX_RESOLVER_PROMPT_VERSION",
+                "xlsx-human-resolution-v1",
+            ).strip()
+            or "xlsx-human-resolution-v1",
+            xlsx_max_package_entries=int(
+                os.environ.get("INGESTION_XLSX_MAX_PACKAGE_ENTRIES", "20000")
+            ),
+            xlsx_max_uncompressed_bytes=int(
+                os.environ.get(
+                    "INGESTION_XLSX_MAX_UNCOMPRESSED_BYTES", "536870912"
+                )
+            ),
+            xlsx_max_compression_ratio=float(
+                os.environ.get("INGESTION_XLSX_MAX_COMPRESSION_RATIO", "100")
+            ),
+            xlsx_max_sheets=int(
+                os.environ.get("INGESTION_XLSX_MAX_SHEETS", "200")
+            ),
+            xlsx_max_cells=int(
+                os.environ.get("INGESTION_XLSX_MAX_CELLS", "1000000")
             ),
             vision_provider=vision_provider,
             vision_model=vision_model,
@@ -258,6 +333,28 @@ class Settings:
             raise ValueError("INGESTION_PDF_RENDER_DPI must be positive")
         if settings.pptx_render_dpi <= 0:
             raise ValueError("INGESTION_PPTX_RENDER_DPI must be positive")
+        if settings.xlsx_render_dpi <= 0:
+            raise ValueError("INGESTION_XLSX_RENDER_DPI must be positive")
+        if settings.xlsx_visual_mode not in {"selective", "all"}:
+            raise ValueError(
+                "INGESTION_XLSX_VISUAL_MODE must be selective or all"
+            )
+        for name, value in (
+            (
+                "INGESTION_XLSX_MAX_RENDER_PAGES_PER_SHEET",
+                settings.xlsx_max_render_pages_per_sheet,
+            ),
+            ("INGESTION_XLSX_MAX_PACKAGE_ENTRIES", settings.xlsx_max_package_entries),
+            ("INGESTION_XLSX_MAX_UNCOMPRESSED_BYTES", settings.xlsx_max_uncompressed_bytes),
+            ("INGESTION_XLSX_MAX_SHEETS", settings.xlsx_max_sheets),
+            ("INGESTION_XLSX_MAX_CELLS", settings.xlsx_max_cells),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if settings.xlsx_max_compression_ratio <= 0:
+            raise ValueError(
+                "INGESTION_XLSX_MAX_COMPRESSION_RATIO must be positive"
+            )
         if settings.vision_max_concurrency <= 0:
             raise ValueError(
                 "INGESTION_VISION_MAX_CONCURRENCY must be positive"

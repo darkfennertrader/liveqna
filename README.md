@@ -96,9 +96,9 @@ baseline supports PDF, PPTX, XLSX, DOCX, Markdown, and text and is awaiting
 representative-file review. The UI now includes an **Ingestion** tab for
 multi-file asynchronous upload, per-version content profiles and user-defined
 retrieval metadata, normalization progress, normalized JSON download, and
-explicit approval or rejection. A presentation requiring review shows the full
-host path of its stored source and offers **Accept**, **Reingest**, and
-**Reject**. Reingest rereads that same editable draft file, recalculates its
+explicit approval or deletion. A document requiring review shows the full host
+path of its stored source and offers **Accept**, **Resolve**, **Delete**, and
+**Reingest** as appropriate. Reingest rereads that same editable draft file, recalculates its
 content hash, and replaces the draft's normalized output asynchronously. This
 phase stops at normalization: chunking, embeddings, and Qdrant publication are
 not implemented yet.

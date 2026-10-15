@@ -8,10 +8,10 @@ import shutil
 from pathlib import Path
 
 from app.extraction.errors import ExtractionFailure
-from app.extraction.pdf_renderer import PdftoppmPdfRenderer
+from app.extraction.pdf_renderer import PyMuPdfRenderer
 from app.extraction.pipeline import ExtractionPipeline
 from app.settings import Settings
-from app.vision import create_vision_provider
+from app.vision import create_review_provider, create_vision_provider
 
 
 def run_review(
@@ -30,13 +30,11 @@ def run_review(
     content_hash = hashlib.sha256(working_source.read_bytes()).hexdigest()
     provider = create_vision_provider(settings)
     pipeline = ExtractionPipeline(
-        pdf_renderer=PdftoppmPdfRenderer(
-            pdftoppm_binary=settings.pdf_pdftoppm_binary,
-            dpi=settings.pdf_render_dpi,
-            timeout_seconds=settings.pdf_render_timeout_seconds,
-        ),
+        pdf_renderer=PyMuPdfRenderer(dpi=settings.pdf_render_dpi),
         vision_provider=provider,
+        review_provider=create_review_provider(settings),
         pdf_vision_prompt_version=settings.pdf_vision_prompt_version,
+        pdf_review_prompt_version=settings.pdf_review_prompt_version,
         vision_max_concurrency=settings.vision_max_concurrency,
     )
     error = None
