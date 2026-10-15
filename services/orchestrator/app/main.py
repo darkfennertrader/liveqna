@@ -8,13 +8,17 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.store.memory import InMemoryStore
 
 from .agents import LLMQuestionGeneratorAgent, LLMSupervisorAgent
 from .graph import build_graph
 from .model_factory import ModelConfigurationError, ModelFactory
+from .memory import SessionQuestionMemory
 from .providers.registry import create_provider_registry
 from .repository import RunRepository
 from .schemas import (
+    AutomaticCandidateRequest,
+    AutomaticCandidateResponse,
     CreateRunRequest,
     ModelOptionsResponse,
     ModelSelection,
@@ -64,14 +68,21 @@ async def lifespan(app: FastAPI):
     repository = RunRepository(str(data_dir / "runs.sqlite"))
     await repository.setup()
     models = ModelFactory(provider_registry)
+    memory_store = InMemoryStore()
+    question_memory = SessionQuestionMemory(memory_store)
     async with AsyncSqliteSaver.from_conn_string(str(data_dir / "checkpoints.sqlite")) as checkpointer:
+        supervisor = LLMSupervisorAgent(models)
         graph = build_graph(
-            supervisor=LLMSupervisorAgent(models),
+            supervisor=supervisor,
             question_generator=LLMQuestionGeneratorAgent(models),
             checkpointer=checkpointer,
+            store=memory_store,
         )
         orchestration = OrchestrationService(
-            graph=graph, repository=repository
+            graph=graph,
+            repository=repository,
+            supervisor=supervisor,
+            question_memory=question_memory,
         )
         app.state.orchestration = orchestration
         app.state.model_factory = models
@@ -170,6 +181,33 @@ async def create_run(payload: CreateRunRequest, request: Request) -> RunAccepted
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post(
+    "/automatic-candidates",
+    response_model=AutomaticCandidateResponse,
+    status_code=202,
+)
+async def assess_automatic_candidate(
+    payload: AutomaticCandidateRequest, request: Request
+) -> AutomaticCandidateResponse:
+    try:
+        payload = payload.model_copy(
+            update={
+                "supervisor_model": provider_registry.normalize_selection(
+                    payload.supervisor_model
+                ),
+                "question_model": provider_registry.normalize_selection(
+                    payload.question_model
+                ),
+            }
+        )
+        return await _service(request).assess_candidate(payload)
+    except ModelConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("automatic transcript assessment failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/runs", response_model=list[RunResponse])
 async def list_runs(request: Request) -> list[RunResponse]:
     return await _service(request).list_runs()
@@ -178,6 +216,12 @@ async def list_runs(request: Request) -> list[RunResponse]:
 @app.delete("/runs")
 async def clear_runs(request: Request) -> dict[str, int]:
     return {"cleared": await _service(request).clear_runs()}
+
+
+@app.post("/sessions/{session_id}/end")
+async def end_session(session_id: str, request: Request) -> dict[str, str]:
+    await _service(request).end_session(session_id)
+    return {"status": "cleared", "session_id": session_id}
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse)

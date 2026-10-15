@@ -8,7 +8,7 @@ const refreshLiveProjectsBtn = document.getElementById("refresh-live-projects");
 const backendSelect = document.getElementById("backend-select");
 const transcriptEl = document.getElementById("transcript");
 const connDot = document.getElementById("conn-dot");
-const pttDot = document.getElementById("ptt-dot");
+const autoCaptureDot = document.getElementById("auto-capture-dot");
 const statusEl = document.getElementById("status");
 const groupLocal = document.getElementById("group-local");
 const groupOnline = document.getElementById("group-online");
@@ -18,17 +18,8 @@ const levelLabel = document.getElementById("level-label");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const startGateHint = document.getElementById("start-gate-hint");
-const pttBtn = document.getElementById("ptt-btn");
-const pttStatusEl = document.getElementById("ptt-status");
-const capturedListEl = document.getElementById("captured-list");
-const capturedEmptyEl = document.getElementById("captured-empty");
 const historyListEl = document.getElementById("history-list");
 const historyEmptyEl = document.getElementById("history-empty");
-const modalOverlay = document.getElementById("modal-overlay");
-const modalTitle = document.getElementById("modal-title");
-const modalBody = document.getElementById("modal-body");
-const modalFooter = document.getElementById("modal-footer");
-const modalClose = document.getElementById("modal-close");
 const questionsListEl = document.getElementById("questions-list");
 const questionsEmptyEl = document.getElementById("questions-empty");
 const questionsClearBtn = document.getElementById("questions-clear-btn");
@@ -211,6 +202,7 @@ let ws = null;
 let levelResetTimer = null;
 let wsConnected = false;
 let captureRunning = false;
+let liveSessionEnding = false;
 // Set the instant Start is clicked, cleared once the server actually
 // confirms capture_started/capture_stopped or reports an error -- lets
 // Start disable itself immediately on click (see conversation history)
@@ -218,59 +210,9 @@ let captureRunning = false;
 // which must only reflect a *confirmed* running pipeline.
 let startPending = false;
 
-// --- push-to-talk state --------------------------------------------------
-// Manual alternative to speaker-based filtering (see conversation history):
-// the user marks exactly which stretch of live transcript they care about
-// by holding a Start/Stop toggle, independent of who is speaking.
-let pttCapturing = false;
-// Ordered list of segment_ids first seen while capturing, in arrival order.
-let pttSegmentOrder = [];
-// segment_id -> latest text seen for it (partial or final).
-let pttSegmentText = new Map();
-// segment_ids that have reached a final decode.
-let pttSegmentFinal = new Set();
-// After Stop is pressed, any segment that was already open (had a partial)
-// keeps updating until it resolves to final, so the last word isn't cut
-// off mid-utterance. This timer bounds how long we wait for that before
-// finalizing with whatever text is available anyway.
-let pttFinalizeTimer = null;
-
-// --- visual line-break synchronization ------------------------------------
-// When Start is pressed while a VAD segment is still mid-flight (partial),
-// faster-whisper keeps re-decoding and replacing that segment's full text
-// in place, so a <br> simply appended at press-time would visually "wait"
-// for the segment to finish before the break appears to take effect (see
-// conversation history: the break landed later than the actual press).
-// Instead we split that segment's rendering into a "before" span (frozen
-// at the character offset the segment had reached at press-time) and an
-// "after" span inserted right after the <br>, and re-slice every
-// subsequent full-text update at that same offset so new words keep
-// landing visually after the break, synchronized to the press moment.
-// This is a rendering-only fix: the actual captured text sent downstream
-// still includes the "before" portion too, per the documented
-// utterance-granular-truncation limitation.
-//
-// segId -> { offset, afterEl }. Entries persist for the lifetime of the
-// segment's DOM nodes (cleaned up alongside them in trimTranscriptIfNeeded)
-// so later highlight/text updates for an already-split segment keep
-// finding the same "after" element.
-const segmentSplits = new Map();
-// Most recently updated segment id, and the set of segment ids that have
-// resolved to a final decode -- tracked for every segment (not just
-// ptt-captured ones) so Start-press can tell whether a segment is
-// currently mid-flight.
-let lastRenderedSegId = null;
-const allSegmentFinal = new Set();
-
-
-// Single source of truth for every captured piece this session (see
-// conversation history: History tab = full session log). Discarding
-// never deletes an entry -- it marks it "discarded" so the History tab
-// remains a true, permanent record; only the sidebar's active-queue view
-// hides discarded entries.
-// { id, text, status: "pending"|"sent"|"discarded", ts }
+// Browser-side history of the server's automatic READY / WAIT / IGNORE
+// decisions. The server owns buffering and candidate boundaries.
 let capturedItems = [];
-let capturedIdCounter = 0;
 const HISTORY_STORAGE_KEY = "liveqna_captured_history";
 
 // Durable orchestration runs are owned by the backend's LangGraph
@@ -444,23 +386,12 @@ async function loadProjectSelectors() {
   }
 }
 
-// Button-enablement rules (see conversation history):
-//   - Start (audio pipeline) is disabled unless the live-transcript
-//     WebSocket is connected AND no capture session is already running
-//     (no point re-starting what's already running) AND push-to-talk
-//     isn't mid-capture.
-//   - Stop (audio pipeline) is disabled unless a capture session is
-//     actually running, and -- while a push-to-talk capture is in
-//     progress -- is force-disabled too, so the audio pipeline can't be
-//     torn out from under an in-progress push-to-talk capture. Once
-//     push-to-talk Stop is pressed, only Stop re-enables (Start stays
-//     disabled because the pipeline is still running).
 function updateCaptureButtons() {
   const project = selectedLiveProject();
-  startBtn.disabled = !wsConnected || !project || captureRunning || pttCapturing || startPending;
-  stopBtn.disabled = !captureRunning || pttCapturing;
-  liveProjectSelect.disabled = captureRunning || pttCapturing || startPending;
-  refreshLiveProjectsBtn.disabled = captureRunning || pttCapturing || startPending;
+  startBtn.disabled = !wsConnected || !project || captureRunning || startPending || liveSessionEnding;
+  stopBtn.disabled = !captureRunning || startPending || liveSessionEnding;
+  liveProjectSelect.disabled = captureRunning || startPending || liveSessionEnding;
+  refreshLiveProjectsBtn.disabled = captureRunning || startPending || liveSessionEnding;
   if (!project) {
     startGateHint.textContent = "Select a project before starting the live call.";
     startGateHint.style.display = "block";
@@ -503,17 +434,15 @@ function setConnDot(connected) {
 
 function setCaptureDot(running) {
   captureRunning = running;
+  updateAutomaticCaptureDot(false);
   updateConnDot();
   updateCaptureButtons();
 }
 
-// "Capturing" dot tracks the push-to-talk Start/Stop toggle specifically
-// (NOT the audio pipeline -- see conversation history: these are two
-// different, easily-confused "capture" concepts, and the dot must follow
-// the push-to-talk button it sits next to).
-function updatePttDot() {
-  pttDot.classList.toggle("green", pttCapturing);
-  pttDot.classList.toggle("red", !pttCapturing);
+function updateAutomaticCaptureDot(working = false) {
+  autoCaptureDot.classList.toggle("green", captureRunning);
+  autoCaptureDot.classList.toggle("red", !captureRunning);
+  autoCaptureDot.classList.toggle("working", captureRunning && working);
 }
 
 
@@ -526,23 +455,11 @@ function trimTranscriptIfNeeded() {
     const oldId = transcriptSegmentOrder.shift();
     const el = utteranceEls.get(oldId);
     if (el) {
-      // Remove the span and the single leading space/break text node we
-      // inserted before it, if present.
       const prev = el.previousSibling;
       if (prev && prev.nodeType === Node.TEXT_NODE) prev.remove();
       el.remove();
     }
-    const split = segmentSplits.get(oldId);
-    if (split) {
-      const br = split.afterEl.previousSibling;
-      if (br && br.nodeName === "BR") br.remove();
-      split.afterEl.remove();
-      segmentSplits.delete(oldId);
-    }
     utteranceEls.delete(oldId);
-    pttSegmentText.delete(oldId);
-    pttSegmentFinal.delete(oldId);
-    allSegmentFinal.delete(oldId);
   }
 }
 
@@ -554,11 +471,6 @@ function appendTranscriptEvent(ev) {
   if (!textEl) {
     textEl = document.createElement("span");
     textEl.className = "utterance-text";
-    // Continuous flowing text: segments are separated by a single space,
-    // not a forced line break, so the transcript reads as one justified
-    // paragraph rather than one line per VAD segment. splitSegmentForPushToTalk
-    // below inserts an actual <br> only at the moment Start-capturing is
-    // pressed, so that boundary is visually explicit.
     if (transcriptEl.lastElementChild) {
       transcriptEl.appendChild(document.createTextNode(" "));
     }
@@ -571,355 +483,33 @@ function appendTranscriptEvent(ev) {
   }
 
   const isPartial = ev.type === "partial";
-  const split = segId != null ? segmentSplits.get(segId) : null;
-  if (split) {
-    // This segment was split at Start-press time: keep slicing every
-    // update at the same frozen offset so new words continue to land
-    // visually after the <br>, synchronized to when the button was
-    // pressed (see note above segmentSplits).
-    const beforeText = ev.text.slice(0, split.offset);
-    const afterText = ev.text.slice(split.offset);
-    textEl.textContent = beforeText;
-    split.afterEl.textContent = afterText;
-    for (const el of [textEl, split.afterEl]) {
-      el.classList.remove("final", "partial");
-      el.classList.add(isPartial ? "partial" : "final");
-    }
-  } else {
-    textEl.classList.remove("final", "partial");
-    textEl.classList.add(isPartial ? "partial" : "final");
-    textEl.textContent = ev.text;
-  }
-
-  if (segId != null) {
-    lastRenderedSegId = segId;
-    if (!isPartial) allSegmentFinal.add(segId);
-  }
+  textEl.classList.remove("final", "partial");
+  textEl.classList.add(isPartial ? "partial" : "final");
+  textEl.textContent = ev.text;
 
   if (wasAtBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
-
-  recordPushToTalkEvent(ev);
 }
-
-// --- push-to-talk logic ---------------------------------------------------
-
-function setUtteranceCapturing(segId, on) {
-  // If this segment was split at Start-press time, only the "after"
-  // portion (words spoken from the press moment onward) represents what
-  // is actually being captured -- the "before" portion is pre-press
-  // speech and must never be highlighted, or the green marker would
-  // misleadingly include words the user didn't intend to capture.
-  const split = segmentSplits.get(segId);
-  if (split) {
-    split.afterEl.classList.toggle("capturing", on);
-    return;
-  }
-  const el = utteranceEls.get(segId);
-  if (el) el.classList.toggle("capturing", on);
-}
-
-
-function recordPushToTalkEvent(ev) {
-  const segId = ev.segment_id;
-  if (segId == null) return;
-
-  const isFinal = ev.type !== "partial";
-
-  if (pttCapturing) {
-    if (!pttSegmentText.has(segId)) pttSegmentOrder.push(segId);
-    pttSegmentText.set(segId, ev.text);
-    if (isFinal) pttSegmentFinal.add(segId);
-    setUtteranceCapturing(segId, true);
-    return;
-  }
-
-  // Not currently capturing, but this segment was still open when Stop
-  // was pressed (its id is already tracked) -- keep absorbing updates
-  // (and keep it highlighted) until it resolves to final, so the sentence
-  // isn't cut off mid-word.
-  if (pttSegmentText.has(segId) && !pttSegmentFinal.has(segId)) {
-    pttSegmentText.set(segId, ev.text);
-    setUtteranceCapturing(segId, true);
-    if (isFinal) {
-      pttSegmentFinal.add(segId);
-      maybeFinishPushToTalkCapture();
-    }
-  }
-}
-
-function allPushToTalkSegmentsFinal() {
-  return pttSegmentOrder.every((id) => pttSegmentFinal.has(id));
-}
-
-function maybeFinishPushToTalkCapture() {
-  if (pttCapturing) return;
-  if (!allPushToTalkSegmentsFinal()) return;
-  if (pttFinalizeTimer) {
-    clearTimeout(pttFinalizeTimer);
-    pttFinalizeTimer = null;
-  }
-  finalizePushToTalkCapture();
-}
-
-function finalizePushToTalkCapture() {
-  const text = pttSegmentOrder
-    .map((id) => (pttSegmentText.get(id) || "").trim())
-    .filter((t) => t.length > 0)
-    .join(" ");
-
-  // The green highlight is a *permanent* visual record of what was
-  // captured, per conversation history -- it must stay green after Stop
-  // so a user can scan the live transcript later and see exactly which
-  // stretches were queued, so we deliberately do NOT clear it here.
-
-  if (text) {
-    const project = activeLiveProject || selectedLiveProject();
-    const item = {
-      id: ++capturedIdCounter,
-      text,
-      status: "pending",
-      ts: Date.now(),
-      projectId: project?.id || null,
-      projectName: project?.name || null,
-    };
-    capturedItems.push(item);
-    renderCapturedList();
-  }
-
-  pttSegmentOrder = [];
-  pttSegmentText = new Map();
-  pttSegmentFinal = new Set();
-}
-
-function resetInProgressPushToTalkCapture() {
-  // Discards the *in-progress* (not-yet-finalized) buffer only -- used
-  // when toggling Start while nothing has been captured yet.
-  for (const id of pttSegmentOrder) setUtteranceCapturing(id, false);
-  pttSegmentOrder = [];
-  pttSegmentText = new Map();
-  pttSegmentFinal = new Set();
-  if (pttFinalizeTimer) {
-    clearTimeout(pttFinalizeTimer);
-    pttFinalizeTimer = null;
-  }
-}
-
-// Inserts a line break in the live transcript synchronized to *this exact
-// moment* (Start-press or Stop-press), splitting the currently open/mid-
-// flight segment's rendering at this instant so later updates to it keep
-// landing after the break (see segmentSplits above for the full
-// rationale). Shared by both Start and Stop so the same visual boundary
-// behavior applies whichever button closes the capture window.
-function insertSyncedLineBreak() {
-  if (!transcriptEl.lastElementChild) return;
-  const openSegId = lastRenderedSegId;
-  const openEl = openSegId != null ? utteranceEls.get(openSegId) : null;
-  const alreadySplit = openSegId != null && segmentSplits.has(openSegId);
-  if (openEl && !alreadySplit && !allSegmentFinal.has(openSegId)) {
-    const offset = openEl.textContent.length;
-    const afterEl = document.createElement("span");
-    afterEl.className = openEl.className;
-    transcriptEl.appendChild(document.createElement("br"));
-    transcriptEl.appendChild(afterEl);
-    segmentSplits.set(openSegId, { offset, afterEl });
-  } else {
-    transcriptEl.appendChild(document.createElement("br"));
-  }
-}
-
-pttBtn.addEventListener("click", () => {
-  if (!pttCapturing) {
-    resetInProgressPushToTalkCapture();
-    pttCapturing = true;
-    updatePttDot();
-    setStatus("Capture started");
-    // While push-to-talk is capturing, the audio pipeline's own Start
-    // AND Stop buttons are both disabled (see conversation history) --
-    // the pipeline can't be torn down or re-started out from under an
-    // in-progress capture window. The push-to-talk button itself (this
-    // one) stays enabled so it can be pressed again to stop.
-    updateCaptureButtons();
-    pttBtn.textContent = "Stop capturing";
-    pttBtn.classList.add("recording");
-    pttStatusEl.textContent = "Capturing... speak now.";
-    // Mark the start of a new captured piece with an explicit line break
-    // in the live transcript, synchronized to this exact press moment.
-    insertSyncedLineBreak();
-    return;
-  }
-
-  pttCapturing = false;
-  updatePttDot();
-  setStatus("Capture ended");
-  pttBtn.textContent = "Start capturing";
-  pttBtn.classList.remove("recording");
-  // Mark the end of the captured piece with a line break too, so the
-  // next bit of live transcript after Stop visually starts fresh on its
-  // own line, matching the Start-press boundary.
-  insertSyncedLineBreak();
-  // Push-to-talk capture is over: re-evaluate the audio pipeline's
-  // Start/Stop -- Stop re-enables (if the pipeline is running), while
-  // Start stays disabled as long as the pipeline is still running.
-  updateCaptureButtons();
-
-  if (pttSegmentOrder.length === 0) {
-    pttStatusEl.textContent = "Not capturing.";
-    return;
-  }
-
-  if (allPushToTalkSegmentsFinal()) {
-    pttStatusEl.textContent = "Not capturing.";
-    finalizePushToTalkCapture();
-  } else {
-    // Give the still-open segment a bounded window to resolve to final
-    // instead of using its last partial text as-is.
-    pttStatusEl.textContent = "Finishing last utterance...";
-    pttFinalizeTimer = setTimeout(() => {
-      pttFinalizeTimer = null;
-      pttStatusEl.textContent = "Not capturing.";
-      finalizePushToTalkCapture();
-    }, 3000);
-  }
-});
-
-
-// --- captured items list (sidebar) + modal viewer -------------------------
 
 function renderCapturedList() {
-  capturedListEl.innerHTML = "";
-  const active = capturedItems.filter((i) => i.status !== "discarded");
-  capturedEmptyEl.style.display = active.length === 0 ? "block" : "none";
-
-  for (const item of active) {
-    const row = document.createElement("div");
-    row.className = "captured-item";
-
-    const preview = document.createElement("div");
-    preview.className = "preview";
-    preview.textContent = item.text;
-    row.appendChild(preview);
-
-    const badge = document.createElement("span");
-    badge.className = `badge ${item.status}`;
-    badge.textContent = item.status;
-    row.appendChild(badge);
-
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "remove-btn";
-    removeBtn.textContent = "\u2715";
-    removeBtn.title = "Discard";
-    removeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      discardCapturedItem(item);
-    });
-    row.appendChild(removeBtn);
-
-    row.addEventListener("click", () => openCapturedModal(item));
-    capturedListEl.appendChild(row);
-  }
-
   renderHistory();
   saveHistory();
 }
 
-function discardCapturedItem(item) {
-  item.status = "discarded";
+function recordAutomaticCandidate(message) {
+  const id = `${message.session_id}:${message.sequence}`;
+  if (capturedItems.some((item) => item.id === id)) return;
+  const result = {
+    id,
+    text: message.source_text,
+    status: message.decision,
+    reason: message.reason || "",
+    ts: Date.now(),
+    runId: message.run_id || null,
+    projectId: activeLiveProject?.id || null,
+    projectName: activeLiveProject?.name || null,
+  };
+  capturedItems.push(result);
   renderCapturedList();
-}
-
-
-function closeModal() {
-  modalOverlay.classList.remove("open");
-  modalBody.textContent = "";
-  modalFooter.innerHTML = "";
-}
-modalClose.addEventListener("click", closeModal);
-modalOverlay.addEventListener("click", (e) => {
-  if (e.target === modalOverlay) closeModal();
-});
-
-function openCapturedModal(item) {
-  modalTitle.textContent = item.status === "sent" ? "Captured text (sent)" : "Captured text";
-  modalBody.textContent = item.text;
-  modalFooter.innerHTML = "";
-
-  if (item.status !== "sent") {
-    const sendBtn = document.createElement("button");
-    sendBtn.className = "primary";
-    sendBtn.textContent = "Send";
-    sendBtn.addEventListener("click", () => sendCapturedItem(item, sendBtn));
-    modalFooter.appendChild(sendBtn);
-  }
-
-  const discardBtn = document.createElement("button");
-  discardBtn.className = item.status === "sent" ? "" : "danger";
-  discardBtn.textContent = item.status === "sent" ? "Close" : "Discard";
-  discardBtn.addEventListener("click", () => {
-    if (item.status !== "sent") {
-      discardCapturedItem(item);
-    }
-    closeModal();
-  });
-  modalFooter.appendChild(discardBtn);
-
-  modalOverlay.classList.add("open");
-}
-
-async function sendCapturedItem(item, sendBtnEl) {
-  if (sendBtnEl) sendBtnEl.disabled = true;
-  const project = item.projectId
-    ? { id: item.projectId, name: item.projectName }
-    : selectedLiveProject();
-  if (!project) {
-    setStatus("This capture has no project. Select a project before sending it.", false);
-    if (sendBtnEl) sendBtnEl.disabled = false;
-    return;
-  }
-  startPhaseIndicator("generation");
-  try {
-    const data = await requestJson("/api/push_to_talk/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: item.text,
-        project_id: project.id,
-        project_name: project.name,
-        supervisor_model: agentModelSelection("supervisor"),
-        question_model: agentModelSelection("question"),
-      }),
-    });
-    activeGenerationRunIds.add(data.run_id);
-    upsertOrchestrationRun({
-      run_id: data.run_id,
-      source_text: item.text,
-      project_id: project.id,
-      project_name: project.name,
-      status: "generating",
-      questions: [],
-      attempt: 0,
-      supervisor_model: agentModelSelection("supervisor"),
-      question_model: agentModelSelection("question"),
-      supervisor_reason: "",
-      retrieval_status: "not_started",
-      question_generation_ms: null,
-      question_retrieval_ms: null,
-      response_return_ms: null,
-      error: null,
-      created_at: data.created_at,
-      updated_at: data.created_at,
-    });
-    setStatus("Question generation started in the background.");
-    item.status = "sent";
-    item.runId = data.run_id;
-    renderCapturedList();
-    saveHistory();
-    closeModal();
-    activateTab("questions");
-  } catch (e) {
-    finishPhaseIndicator("generation");
-    setStatus(`Send failed: ${e.message}`, false);
-    if (sendBtnEl) sendBtnEl.disabled = false;
-  }
 }
 
 function agentModelSelection(kind) {
@@ -1538,10 +1128,11 @@ async function submitQuestionReview(run, card, row, action, buttons) {
 
 function renderQuestions() {
   questionsListEl.innerHTML = "";
-  questionsEmptyEl.style.display = orchestrationRuns.length === 0 ? "block" : "none";
+  const visibleRuns = orchestrationRuns.filter((run) => run.status !== "ignored");
+  questionsEmptyEl.style.display = visibleRuns.length === 0 ? "block" : "none";
   questionsClearBtn.disabled = orchestrationRuns.length === 0;
 
-  for (const run of orchestrationRuns) {
+  for (const run of visibleRuns) {
     const card = document.createElement("section");
     card.className = "question-run";
 
@@ -1702,7 +1293,7 @@ async function loadOrchestrationRuns() {
   }
 }
 
-// --- History tab: full session log of every capture, pending/sent/discarded
+// --- History tab: automatic transcript candidate decisions ----------------
 
 function formatTimestamp(ts) {
   const d = new Date(ts);
@@ -1733,36 +1324,6 @@ function renderHistory() {
     const metaRight = document.createElement("div");
     metaRight.className = "meta-right";
 
-    // Send/Discard live in the expanded preview's top-right, next to the
-    // status badge, per conversation history -- shown only when expanded
-    // and only while the item is still pending (matches the modal's
-    // existing rules: sent items get no Send button, and there is
-    // nothing meaningful to discard once sent).
-    if (item.status === "pending") {
-      const actions = document.createElement("div");
-      actions.className = "actions";
-
-      const sendBtn = document.createElement("button");
-      sendBtn.className = "primary";
-      sendBtn.textContent = "Send";
-      sendBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        sendCapturedItem(item, sendBtn);
-      });
-      actions.appendChild(sendBtn);
-
-      const discardBtn = document.createElement("button");
-      discardBtn.className = "danger";
-      discardBtn.textContent = "Discard";
-      discardBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        discardCapturedItem(item);
-      });
-      actions.appendChild(discardBtn);
-
-      metaRight.appendChild(actions);
-    }
-
     const badge = document.createElement("span");
     badge.className = `badge ${item.status}`;
     badge.textContent = item.status;
@@ -1775,9 +1336,6 @@ function renderHistory() {
     snippet.textContent = item.text;
     row.appendChild(snippet);
 
-    // Clicking the row expands/collapses it in place instead of opening
-    // the modal (History-tab-only behavior; the sidebar queue still uses
-    // the modal via openCapturedModal).
     row.addEventListener("click", () => {
       if (expandedHistoryIds.has(item.id)) {
         expandedHistoryIds.delete(item.id);
@@ -1931,12 +1489,46 @@ function connect() {
       case "status":
         setCaptureDot(!!(msg.capture && msg.capture.running));
         break;
+      case "session_assessment_started":
+        startPhaseIndicator("generation");
+        updateAutomaticCaptureDot(true);
+        setStatus(`Automatic candidate ${msg.sequence} is being assessed.`);
+        break;
+      case "session_candidate":
+        updateAutomaticCaptureDot(false);
+        recordAutomaticCandidate(msg);
+        if (msg.decision === "ready" && msg.run_id) {
+          activeGenerationRunIds.add(msg.run_id);
+          setStatus("Transcript candidate is ready; questions are being generated.");
+        } else {
+          finishPhaseIndicator("generation", msg.assessment_ms);
+          const detail = msg.decision === "wait"
+            ? "Supervisor is waiting for more context."
+            : "Transcript candidate did not require a question.";
+          setStatus(detail);
+        }
+        break;
+      case "session_candidate_failed":
+        updateAutomaticCaptureDot(false);
+        finishPhaseIndicator("generation");
+        setStatus(`Automatic transcript assessment failed: ${msg.error}`, false);
+        break;
+      case "live_session_status":
+        if (msg.status === "ended") {
+          liveSessionEnding = false;
+          activeLiveProject = null;
+          updateCaptureButtons();
+          setStatus("Live Q&A session ended and its remaining transcript was flushed.");
+        }
+        break;
       case "orchestration_run":
         if (activeGenerationRunIds.delete(msg.run.run_id)) {
           finishPhaseIndicator("generation", msg.run.question_generation_ms);
         }
         upsertOrchestrationRun(msg.run);
-        setStatus("Questions generated and ready for independent review.");
+        setStatus(msg.run.status === "ignored"
+          ? "No responsible question was generated for this candidate."
+          : "Questions generated and ready for independent review.");
         break;
       case "orchestration_run_failed": {
         if (activeGenerationRunIds.delete(msg.run_id)) {
@@ -2017,7 +1609,16 @@ startBtn.addEventListener("click", async () => {
   activeLiveProject = project;
   updateCaptureButtons();
   try {
-    await requestJson("/api/runtime/start-live", { method: "POST" });
+    await requestJson("/api/runtime/start-live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: project.id,
+        project_name: project.name,
+        supervisor_model: agentModelSelection("supervisor"),
+        question_model: agentModelSelection("question"),
+      }),
+    });
   } catch (error) {
     startPending = false;
     activeLiveProject = null;
@@ -2037,33 +1638,24 @@ startBtn.addEventListener("click", async () => {
 });
 
 
-document.getElementById("stop-btn").addEventListener("click", () => {
-  send("stop");
+document.getElementById("stop-btn").addEventListener("click", async () => {
+  liveSessionEnding = true;
+  stopBtn.disabled = true;
+  try {
+    await requestJson("/api/runtime/end-live", { method: "POST" });
+    setStatus("Ending Live Q&A; remaining transcript will be assessed asynchronously.");
+  } catch (error) {
+    liveSessionEnding = false;
+    stopBtn.disabled = false;
+    updateCaptureButtons();
+    setStatus(`Could not end Live Q&A: ${error.message}`, false);
+  }
 });
 
-// Fully resets the live transcript view and all per-segment tracking
-// state tied to it (DOM nodes, split/highlight bookkeeping, push-to-talk
-// in-progress buffer) -- shared by "Clear transcript" and "Clear all" so
-// neither leaves stale segment_id references behind that could resurface
-// oddly if a segment_id happened to repeat.
 function clearTranscript() {
-  if (pttCapturing) {
-    // Don't silently drop an in-progress capture -- end it the same way
-    // Stop would, just without the trailing synced line break (there is
-    // no transcript left for it to apply to).
-    pttCapturing = false;
-    updatePttDot();
-    pttBtn.textContent = "Start capturing";
-    pttBtn.classList.remove("recording");
-    updateCaptureButtons();
-  }
-  resetInProgressPushToTalkCapture();
   transcriptEl.innerHTML = "";
   utteranceEls.clear();
   transcriptSegmentOrder = [];
-  segmentSplits.clear();
-  allSegmentFinal.clear();
-  lastRenderedSegId = null;
 }
 
 document.getElementById("clear-btn").addEventListener("click", clearTranscript);
@@ -2133,7 +1725,7 @@ questionModelEl.addEventListener("input", () => {
 clearAllState();
 renderCapturedList();
 updateCaptureButtons();
-updatePttDot();
+updateAutomaticCaptureDot(false);
 renderQuestions();
 renderIngestionSelections();
 loadIngestionLibrary();

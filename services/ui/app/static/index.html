@@ -128,60 +128,6 @@ button.danger:hover { background: rgba(248,113,113,.1); }
 }
 .utterance-text { color: var(--text); }
 .utterance-text.partial { color: var(--muted); font-style: italic; }
-.utterance-text.capturing {
-  color: var(--success); font-weight: 600;
-}
-#ptt-btn.recording { background: var(--danger); color: #fff; border-color: var(--danger); }
-#ptt-btn.recording:hover { background: #ff8a8a; }
-#captured-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.captured-item {
-  display: flex; align-items: center; gap: 8px; background: var(--bg-elevated);
-  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px;
-  cursor: pointer; transition: border-color .15s, background .15s;
-}
-.captured-item:hover { border-color: var(--accent); background: #171a24; }
-.captured-item .preview {
-  flex: 1; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; min-width: 0;
-}
-.captured-item .badge {
-  font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 6px;
-  border-radius: 10px; flex-shrink: 0; font-weight: 700;
-}
-.badge.pending { background: rgba(251,191,36,.18); color: var(--warning); }
-.badge.sent { background: rgba(74,222,128,.18); color: var(--success); }
-.captured-item .remove-btn {
-  width: auto; margin: 0; padding: 2px 7px; background: transparent; border: none;
-  color: var(--muted); font-size: 15px; line-height: 1; flex-shrink: 0;
-}
-.captured-item .remove-btn:hover { color: var(--danger); background: transparent; }
-#captured-empty { font-size: 12px; color: var(--muted-2); padding: 8px 0; }
-#modal-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(5,6,10,.65);
-  z-index: 200; align-items: center; justify-content: center;
-}
-#modal-overlay.open { display: flex; }
-#modal-box {
-  width: min(640px, 90vw); max-height: 80vh; background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-#modal-header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
-}
-#modal-header .title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-#modal-close {
-  width: auto; margin: 0; padding: 4px 9px; background: transparent; border: none;
-  color: var(--muted); font-size: 18px; line-height: 1;
-}
-#modal-close:hover { color: var(--text); background: transparent; }
-#modal-body {
-  padding: 18px; overflow-y: auto; font-size: 15px; line-height: 1.7; white-space: pre-wrap;
-  flex: 1;
-}
-#modal-footer { display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border-soft); }
-#modal-footer button { margin-top: 0; }
 #history-list { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; padding-right: 4px; }
 .history-item {
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
@@ -200,11 +146,13 @@ button.danger:hover { background: rgba(248,113,113,.1); }
   -webkit-line-clamp: unset; display: block; white-space: pre-wrap; overflow: visible;
 }
 .history-item .meta-right { display: flex; align-items: center; gap: 8px; }
-.history-item .actions { display: none; gap: 8px; }
-.history-item.expanded .actions { display: flex; }
-.history-item .actions button {
-  margin: 0; width: auto; padding: 4px 11px; font-size: 11px;
+.history-item .badge {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px;
+  border-radius: 10px; flex-shrink: 0; font-weight: 700;
 }
+.badge.ready { background: rgba(74,222,128,.18); color: var(--success); }
+.badge.wait { background: rgba(251,191,36,.18); color: var(--warning); }
+.badge.ignore { background: rgba(148,163,184,.18); color: var(--muted); }
 #history-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
 #history-toolbar button { margin-top: 0; width: auto; padding: 7px 14px; }
 #history-empty { font-size: 13px; color: var(--muted-2); text-align: center; padding: 40px 0; }
@@ -382,9 +330,6 @@ button.danger:hover { background: rgba(248,113,113,.1); }
     <div id="question-parameters" class="agent-parameters"></div>
     <p class="agent-hint">Parameters are supplied by the selected provider adapter. Credentials and provider connectivity remain configured on the orchestrator service.</p>
 
-    <h2>Captured pieces</h2>
-    <div id="captured-list"></div>
-    <p id="captured-empty">No captures yet.</p>
   </div>
 
 
@@ -394,7 +339,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
         <h1>liveqna</h1>
         <div class="status-dots">
           <div class="status-dot-group"><div id="conn-dot" class="dot"></div> Live transcript</div>
-          <div class="status-dot-group"><div id="ptt-dot" class="dot"></div> Capturing</div>
+          <div class="status-dot-group"><div id="auto-capture-dot" class="dot"></div> Automatic capture</div>
           <div class="status-dot-group">
             <div id="question-generation-dot" class="dot green"></div>
             Question generation <span id="question-generation-time" class="phase-time">ready</span>
@@ -417,19 +362,14 @@ button.danger:hover { background: rgba(248,113,113,.1); }
           <select id="source-select"></select>
           <button id="refresh-sources" title="Refresh sources">&#x21bb;</button>
         </div>
-        <button id="start-btn" class="primary" disabled>Start</button>
-        <button id="stop-btn" class="danger">Stop</button>
-        <div class="divider"></div>
-        <button id="ptt-btn">Start capturing</button>
+        <button id="start-btn" class="primary" disabled>Start Live Q&amp;A</button>
+        <button id="stop-btn" class="danger">End Live Q&amp;A</button>
         <div class="divider"></div>
         <button id="clear-btn">Clear transcript</button>
         <button id="clear-all-btn" class="danger">Clear all</button>
       </div>
       <p id="start-gate-hint" style="font-size:11px; color:var(--muted-2); margin:0;">
         Select a project before starting the live call.
-      </p>
-      <p id="ptt-status" style="font-size:11px; color:var(--muted); margin:0; line-height:1.4;">
-        Not capturing.
       </p>
     </div>
 
@@ -494,7 +434,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
         </div>
       </div>
       <div id="history-list"></div>
-      <p id="history-empty">No captured dialogues yet. Use "Start capturing" to mark a piece of the live transcript.</p>
+      <p id="history-empty">No automatic transcript candidates yet.</p>
     </div>
 
     <div class="tab-panel" id="tab-questions">
@@ -502,7 +442,7 @@ button.danger:hover { background: rgba(248,113,113,.1); }
         <button id="questions-clear-btn" class="danger">Clear questions</button>
       </div>
       <div id="questions-list"></div>
-      <p id="questions-empty">No generated questions yet. Send a captured piece to create a review task.</p>
+      <p id="questions-empty">No generated questions yet. Candidates are created automatically during Live Q&amp;A.</p>
     </div>
 
     <div class="tab-panel" id="tab-logging">
@@ -510,18 +450,6 @@ button.danger:hover { background: rgba(248,113,113,.1); }
     </div>
   </div>
 
-
-  <div id="modal-overlay">
-    <div id="modal-box">
-      <div id="modal-header">
-        <span class="title" id="modal-title">Captured text</span>
-        <button id="modal-close">&times;</button>
-      </div>
-      <div id="modal-body"></div>
-      <div id="modal-footer"></div>
-    </div>
-  </div>
-
-  <script src="/static/app.js?v=live-project-v1"></script>
+  <script src="/static/app.js?v=automatic-session-v1"></script>
 </body>
 </html>

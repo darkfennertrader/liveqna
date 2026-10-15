@@ -1,0 +1,25 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	supervisor(supervisor)
+	question_generator(question_generator)
+	human_review(human_review)
+	retrieval_placeholder(retrieval_placeholder)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> supervisor;
+	human_review -. &nbsp;approve, reject, or regenerate&nbsp; .-> supervisor;
+	question_generator -. &nbsp;no question&nbsp; .-> __end__;
+	question_generator -. &nbsp;questions generated&nbsp; .-> human_review;
+	supervisor -. &nbsp;rejected&nbsp; .-> __end__;
+	supervisor -. &nbsp;review incomplete input&nbsp; .-> human_review;
+	supervisor -. &nbsp;delegate or regenerate&nbsp; .-> question_generator;
+	supervisor -. &nbsp;validated questions&nbsp; .-> retrieval_placeholder;
+	retrieval_placeholder --> __end__;
+	human_review -. &nbsp;next question&nbsp; .-> human_review;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

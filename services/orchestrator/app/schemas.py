@@ -15,6 +15,7 @@ RunStatus = Literal[
     "awaiting_review",
     "validated",
     "rejected",
+    "ignored",
     "failed",
 ]
 
@@ -108,6 +109,18 @@ class SupervisorDecision(BaseModel):
     reason: str = Field(default="", max_length=1_000)
 
 
+class TranscriptReadiness(BaseModel):
+    decision: Literal["ready", "wait", "ignore"]
+    relation: Literal[
+        "new", "follow_up", "duplicate", "unresolved", "none"
+    ] = "none"
+    parent_question_ids: list[str] = Field(default_factory=list, max_length=20)
+    standalone_intent: str = Field(default="", max_length=2_000)
+    instruction: str = Field(min_length=1, max_length=2_000)
+    reason: str = Field(default="", max_length=1_000)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class CreateRunRequest(BaseModel):
     text: str = Field(min_length=1, max_length=30_000)
     project_id: str = Field(min_length=1, max_length=100)
@@ -132,6 +145,26 @@ class CreateRunRequest(BaseModel):
         return value
 
 
+class AutomaticCandidateRequest(CreateRunRequest):
+    session_id: str = Field(min_length=1, max_length=100)
+    force_decision: bool = False
+
+
+class AutomaticCandidateResponse(BaseModel):
+    decision: Literal["ready", "wait", "ignore"]
+    relation: Literal[
+        "new", "follow_up", "duplicate", "unresolved", "none"
+    ] = "none"
+    parent_question_ids: list[str] = Field(default_factory=list)
+    standalone_intent: str = ""
+    instruction: str
+    reason: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    assessment_ms: int = Field(ge=0)
+    run_id: str | None = None
+    created_at: str | None = None
+
+
 class ReviewDecision(BaseModel):
     action: Literal["approve", "reject", "regenerate"]
     question_id: str = Field(min_length=1, max_length=100)
@@ -153,6 +186,7 @@ class ReviewDecision(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     source_text: str
+    session_id: str | None = None
     project_id: str | None = None
     project_name: str | None = None
     status: RunStatus
@@ -161,6 +195,11 @@ class RunResponse(BaseModel):
     supervisor_model: ModelSelection
     question_model: ModelSelection
     supervisor_reason: str = ""
+    question_relation: Literal[
+        "new", "follow_up", "duplicate", "unresolved", "none"
+    ] = "none"
+    parent_question_ids: list[str] = Field(default_factory=list)
+    standalone_intent: str = ""
     retrieval_status: Literal["not_started", "ready"] = "not_started"
     question_generation_ms: int | None = Field(default=None, ge=0)
     question_retrieval_ms: int | None = Field(default=None, ge=0)

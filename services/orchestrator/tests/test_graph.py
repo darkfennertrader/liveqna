@@ -84,6 +84,46 @@ async def test_generates_multiple_questions_and_pauses_for_review() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_generation_is_ignored_without_human_review() -> None:
+    graph = build_graph(
+        supervisor=FakeSupervisor(),
+        question_generator=FakeQuestionGenerator([[]]),
+        checkpointer=InMemorySaver(),
+    )
+
+    result = await graph.ainvoke(initial_state(), config())
+
+    assert result["status"] == "ignored"
+    assert result["questions"] == []
+    assert "__interrupt__" not in result
+
+
+@pytest.mark.asyncio
+async def test_preassessed_run_skips_duplicate_supervisor_call() -> None:
+    supervisor = FakeSupervisor()
+    state = initial_state()
+    state.update(
+        {
+            "supervisor_preassessed": True,
+            "supervisor_instruction": "Use the existing readiness instruction.",
+            "supervisor_reason": "Already assessed.",
+            "question_generation_ms": 12,
+        }
+    )
+    graph = build_graph(
+        supervisor=supervisor,
+        question_generator=FakeQuestionGenerator([["Ready question?"]]),
+        checkpointer=InMemorySaver(),
+    )
+
+    result = await graph.ainvoke(state, config())
+
+    assert supervisor.calls == 0
+    assert result["status"] == "awaiting_review"
+    assert result["question_generation_ms"] >= 12
+
+
+@pytest.mark.asyncio
 async def test_approval_keeps_human_edits_and_finishes() -> None:
     graph = build_graph(
         supervisor=FakeSupervisor(),

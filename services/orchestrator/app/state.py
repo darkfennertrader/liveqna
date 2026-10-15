@@ -6,6 +6,7 @@ from typing import NotRequired, TypedDict
 class OrchestrationState(TypedDict):
     run_id: str
     source_text: str
+    session_id: NotRequired[str | None]
     project_id: NotRequired[str]
     project_name: NotRequired[str]
     supervisor_model: dict
@@ -16,6 +17,11 @@ class OrchestrationState(TypedDict):
     updated_at: str
     supervisor_instruction: NotRequired[str]
     supervisor_reason: NotRequired[str]
+    question_relation: NotRequired[str]
+    parent_question_ids: NotRequired[list[str]]
+    standalone_intent: NotRequired[str]
+    session_questions: NotRequired[list[dict]]
+    supervisor_preassessed: NotRequired[bool]
     questions: NotRequired[list[dict]]
     review_action: NotRequired[str | None]
     review_feedback: NotRequired[str]

@@ -30,9 +30,9 @@ flowchart TB
     subgraph BOUNDARY["2. Automatic transcript boundary"]
         direction LR
         BUFFER[Rolling transcript buffer<br/>Append finalized text] --> ACTIVITY[Track latest speech activity]
-        ACTIVITY --> SILENCE[Configurable silence reached<br/><br/>LIVE_SESSION_<br/>SILENCE_MS<br/>Default: 1500 ms]
+        ACTIVITY --> SILENCE[Configurable silence reached<br/><br/>LIVE_SESSION_<br/>SILENCE_MS<br/>Default: 500 ms]
         SILENCE --> CANDIDATE[Create transcript candidate<br/>Queue asynchronously]
-        BUFFER -. hard safety path .-> LIMITS[Force readiness check when<br/>either limit is reached<br/><br/>LIVE_SESSION_<br/>MAX_WAIT_MS<br/>Default: 10000 ms<br/><br/>LIVE_SESSION_<br/>MAX_WORDS<br/>Default: 150 words]
+        BUFFER -. hard safety path .-> LIMITS[Force readiness check when<br/>either limit is reached<br/><br/>LIVE_SESSION_<br/>MAX_WAIT_MS<br/>Default: 18000 ms<br/><br/>LIVE_SESSION_<br/>MAX_WORDS<br/>Default: 140 words]
         LIMITS --> CANDIDATE
     end
 

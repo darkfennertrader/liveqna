@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from . import proxy
 from .config_store import ConfigStore
+from .live_session import LiveSessionConfig, LiveSessionManager, LiveSessionStateError
 
 
 logging.basicConfig(level=logging.INFO)
@@ -81,6 +82,7 @@ browser_clients: set[WebSocket] = set()
 _transcript_relay_task: asyncio.Task | None = None
 _level_relay_task: asyncio.Task | None = None
 _orchestration_watch_tasks: dict[str, asyncio.Task] = {}
+_live_session_manager: LiveSessionManager | None = None
 _runtime_lock = asyncio.Lock()
 # STT eagerly preloads the configured Live Q&A backend at service startup.
 _live_models_loaded = True
@@ -139,6 +141,18 @@ def _schedule_orchestration_watch(run_id: str) -> None:
     )
 
 
+async def _submit_automatic_candidate(payload: dict) -> dict:
+    result = await proxy.assess_automatic_candidate(payload)
+    run_id = result.get("run_id")
+    if run_id:
+        _schedule_orchestration_watch(run_id)
+    return result
+
+
+async def _end_orchestration_session(session_id: str) -> None:
+    await proxy.end_orchestration_session(session_id)
+
+
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
@@ -157,6 +171,8 @@ async def _relay_transcripts_forever() -> None:
                         payload = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
+                    if _live_session_manager is not None:
+                        await _live_session_manager.ingest(payload)
                     dead = []
                     for client in list(browser_clients):
                         try:
@@ -199,12 +215,25 @@ async def _relay_levels_forever() -> None:
 @app.on_event("startup")
 async def _startup() -> None:
     global _transcript_relay_task, _level_relay_task, _live_models_loaded
+    global _live_session_manager
+    _live_session_manager = LiveSessionManager(
+        config=LiveSessionConfig.from_env(),
+        assess_candidate=_submit_automatic_candidate,
+        emit_event=_broadcast_to_browsers,
+        end_session_memory=_end_orchestration_session,
+    )
     _transcript_relay_task = asyncio.create_task(_relay_transcripts_forever())
     _level_relay_task = asyncio.create_task(_relay_levels_forever())
     try:
         _live_models_loaded = bool((await proxy.stt_health()).get("model_loaded"))
     except Exception:
         logger.warning("could not determine initial STT runtime state")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    if _live_session_manager is not None:
+        await _live_session_manager.shutdown()
 
 
 @app.websocket("/ws/client")
@@ -283,11 +312,15 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
             result = await proxy.start_capture()
             await ws.send_json({"kind": "capture_started", "result": result})
         except Exception as exc:
+            if _live_session_manager is not None:
+                await _live_session_manager.end()
             await ws.send_json({"kind": "error", "message": f"start failed: {exc}"})
 
     elif action == "stop":
         try:
             result = await proxy.stop_capture()
+            if _live_session_manager is not None:
+                await _live_session_manager.end()
             await ws.send_json({"kind": "capture_stopped", "result": result})
         except Exception as exc:
             await ws.send_json({"kind": "error", "message": f"stop failed: {exc}"})
@@ -301,8 +334,7 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
             await ws.send_json({"kind": "error", "message": str(exc)})
 
 
-# --- push-to-talk capture (manual: user marks a time window, then sends
-# the captured text for downstream processing) ---------------------------
+# --- live-session and question-review schemas -----------------------------
 
 class AgentModelSelection(BaseModel):
     provider: str = Field(min_length=1, max_length=100)
@@ -322,6 +354,13 @@ class AgentModelSelection(BaseModel):
 
 class PushToTalkSendRequest(BaseModel):
     text: str = Field(min_length=1, max_length=30_000)
+    project_id: str = Field(min_length=1, max_length=100)
+    project_name: str = Field(min_length=1, max_length=200)
+    supervisor_model: AgentModelSelection
+    question_model: AgentModelSelection
+
+
+class StartLiveRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=100)
     project_name: str = Field(min_length=1, max_length=200)
     supervisor_model: AgentModelSelection
@@ -358,6 +397,12 @@ async def runtime_status():
         )
         return {
             "live_models_loaded": _live_models_loaded,
+            "live_session": {
+                "state": _live_session_manager.state,
+                "config": _live_session_manager.config.as_dict(),
+            }
+            if _live_session_manager is not None
+            else {"state": "unavailable", "config": {}},
             "stt": stt,
             "orchestration": orchestration,
             "ingestion": ingestion,
@@ -392,6 +437,8 @@ async def start_ingestion_runtime():
                 )
             # Local ingestion owns the GPU until it completes.
             await proxy.stop_capture()
+            if _live_session_manager is not None:
+                await _live_session_manager.end()
             await proxy.unload_stt()
             _live_models_loaded = False
             await proxy.unload_orchestrator_models()
@@ -410,8 +457,8 @@ async def start_ingestion_runtime():
 
 
 @app.post("/api/runtime/start-live")
-async def start_live_runtime():
-    """Release local ingestion models, then load the configured Live Q&A STT."""
+async def start_live_runtime(req: StartLiveRequest):
+    """Load Live Q&A models and open an automatic transcript session."""
     global _live_models_loaded
     async with _runtime_lock:
         try:
@@ -431,19 +478,57 @@ async def start_live_runtime():
                 model_config["sample_rate"] = store.state["capture"]["sample_rate"]
                 configured = await proxy.configure_stt(model_config)
                 _live_models_loaded = True
+            if _live_session_manager is None:
+                raise HTTPException(
+                    status_code=503, detail="live session manager is unavailable"
+                )
+            session = await _live_session_manager.start(
+                {
+                    "project_id": req.project_id,
+                    "project_name": req.project_name,
+                    "supervisor_model": req.supervisor_model.model_dump(),
+                    "question_model": req.question_model.model_dump(),
+                }
+            )
             return {
                 "status": "ready",
                 "mode": "live",
                 "stt": configured,
+                "session": session,
                 "ingestion_was_remote_only": not ingestion.get("uses_local_gpu"),
             }
         except proxy.UpstreamServiceError as exc:
             _raise_upstream(exc)
         except HTTPException:
             raise
+        except LiveSessionStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"Live Q&A model loading failed: {exc}"
+            ) from exc
+
+
+@app.post("/api/runtime/end-live")
+async def end_live_runtime():
+    """Stop capture and asynchronously flush the session's remaining text."""
+    async with _runtime_lock:
+        try:
+            capture = await proxy.stop_capture()
+            session = (
+                await _live_session_manager.end()
+                if _live_session_manager is not None
+                else {"status": "idle", "session_id": None}
+            )
+            await _broadcast_to_browsers(
+                {"kind": "capture_stopped", "result": capture}
+            )
+            return {"status": "ending", "capture": capture, "session": session}
+        except proxy.UpstreamServiceError as exc:
+            _raise_upstream(exc)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"ending Live Q&A failed: {exc}"
             ) from exc
 
 

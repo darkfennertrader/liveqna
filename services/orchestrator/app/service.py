@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import uuid4
 
 from langgraph.types import Command
 
+from .agents import SupervisorAgent
+from .memory import SessionQuestionMemory
 from .repository import RunRepository
 from .schemas import (
+    AutomaticCandidateRequest,
+    AutomaticCandidateResponse,
     CreateRunRequest,
     ReviewDecision,
     RunAccepted,
@@ -29,9 +34,18 @@ def _now() -> str:
 
 
 class OrchestrationService:
-    def __init__(self, *, graph, repository: RunRepository) -> None:
+    def __init__(
+        self,
+        *,
+        graph,
+        repository: RunRepository,
+        supervisor: SupervisorAgent,
+        question_memory: SessionQuestionMemory | None = None,
+    ) -> None:
         self._graph = graph
         self._repository = repository
+        self._supervisor = supervisor
+        self._question_memory = question_memory
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
         self._active_run_ids: set[str] = set()
@@ -56,29 +70,90 @@ class OrchestrationService:
         task.add_done_callback(cleanup)
 
     async def enqueue_run(self, request: CreateRunRequest) -> RunAccepted:
+        return await self._enqueue_run(request)
+
+    async def assess_candidate(
+        self, request: AutomaticCandidateRequest
+    ) -> AutomaticCandidateResponse:
+        recent_questions = (
+            await self._question_memory.recent_questions(request.session_id)
+            if self._question_memory is not None
+            else []
+        )
+        phase_started = perf_counter()
+        readiness = await self._supervisor.assess(
+            source_text=request.text,
+            selection=request.supervisor_model,
+            force_decision=request.force_decision,
+            recent_questions=recent_questions,
+        )
+        assessment_ms = round((perf_counter() - phase_started) * 1000)
+        if readiness.decision != "ready":
+            return AutomaticCandidateResponse(
+                **readiness.model_dump(mode="json"),
+                assessment_ms=assessment_ms,
+            )
+
+        accepted = await self._enqueue_run(
+            request,
+            supervisor_instruction=readiness.instruction,
+            supervisor_reason=readiness.reason,
+            assessment_ms=assessment_ms,
+            session_questions=recent_questions,
+            question_relation=readiness.relation,
+            parent_question_ids=readiness.parent_question_ids,
+            standalone_intent=readiness.standalone_intent,
+        )
+        return AutomaticCandidateResponse(
+            **readiness.model_dump(mode="json"),
+            assessment_ms=assessment_ms,
+            run_id=accepted.run_id,
+            created_at=accepted.created_at,
+        )
+
+    async def _enqueue_run(
+        self,
+        request: CreateRunRequest,
+        *,
+        supervisor_instruction: str | None = None,
+        supervisor_reason: str = "",
+        assessment_ms: int | None = None,
+        session_questions: list[dict] | None = None,
+        question_relation: str = "none",
+        parent_question_ids: list[str] | None = None,
+        standalone_intent: str = "",
+    ) -> RunAccepted:
         run_id = str(uuid4())
         created_at = _now()
         await self._repository.create(run_id, created_at)
         initial_state = {
             "run_id": run_id,
             "source_text": request.text,
+            "session_id": getattr(request, "session_id", None),
             "project_id": request.project_id,
             "project_name": request.project_name,
             "supervisor_model": request.supervisor_model.model_dump(mode="json"),
             "question_model": request.question_model.model_dump(mode="json"),
-            "status": "supervising",
+            "status": "generating" if supervisor_instruction else "supervising",
             "attempt": 0,
             "questions": [],
             "review_action": None,
             "review_feedback": "",
             "target_question_id": None,
             "retrieval_status": "not_started",
-            "question_generation_ms": None,
+            "question_generation_ms": assessment_ms,
             "question_retrieval_ms": None,
             "response_return_ms": None,
             "error": None,
             "created_at": created_at,
             "updated_at": created_at,
+            "supervisor_preassessed": supervisor_instruction is not None,
+            "supervisor_instruction": supervisor_instruction or "",
+            "supervisor_reason": supervisor_reason,
+            "question_relation": question_relation,
+            "parent_question_ids": parent_question_ids or [],
+            "standalone_intent": standalone_intent,
+            "session_questions": session_questions or [],
         }
         self._track(run_id, self._execute_initial_run(run_id, initial_state))
         return RunAccepted(run_id=run_id, created_at=created_at)
@@ -88,6 +163,8 @@ class OrchestrationService:
             await self._graph.ainvoke(initial_state, self._config(run_id))
             response = await self.get_run(run_id)
             await self._repository.update(run_id, response.status)
+            if self._question_memory is not None:
+                self._question_memory.enqueue_snapshot(response)
         except Exception as exc:
             await self._repository.update(run_id, "failed", str(exc))
 
@@ -126,6 +203,8 @@ class OrchestrationService:
                 )
                 response = await self.get_run(run_id)
                 await self._repository.update(run_id, response.status)
+                if self._question_memory is not None:
+                    self._question_memory.enqueue_snapshot(response)
                 return response
             except Exception as exc:
                 await self._repository.update(run_id, "failed", str(exc))
@@ -167,11 +246,19 @@ class OrchestrationService:
         for run_id in run_ids:
             await self._graph.checkpointer.adelete_thread(run_id)
         await self._repository.delete_all()
+        if self._question_memory is not None:
+            await self._question_memory.clear_all()
         self._locks.clear()
         return len(run_ids)
 
+    async def end_session(self, session_id: str) -> None:
+        if self._question_memory is not None:
+            await self._question_memory.close_session(session_id)
+
     async def shutdown(self) -> None:
         await self._cancel_tasks()
+        if self._question_memory is not None:
+            await self._question_memory.shutdown()
 
     async def _cancel_tasks(self) -> None:
         for task in self._tasks:

@@ -110,6 +110,14 @@ async def create_orchestration_run(payload: dict) -> dict:
     return await _orchestrator_request("POST", "/runs", payload)
 
 
+async def assess_automatic_candidate(payload: dict) -> dict:
+    return await _orchestrator_request("POST", "/automatic-candidates", payload)
+
+
+async def end_orchestration_session(session_id: str) -> dict:
+    return await _orchestrator_request("POST", f"/sessions/{session_id}/end")
+
+
 async def list_orchestration_runs() -> list[dict]:
     return await _orchestrator_request("GET", "/runs")
 

@@ -21,6 +21,7 @@ def build_graph(
     supervisor: SupervisorAgent,
     question_generator: QuestionGeneratorAgent,
     checkpointer: Any,
+    store: Any = None,
 ):
     async def supervisor_node(state: OrchestrationState) -> Command:
         review_action = state.get("review_action")
@@ -33,6 +34,17 @@ def build_graph(
             return Command(
                 update={"status": "rejected", "updated_at": _now(), "error": None},
                 goto=END,
+            )
+
+        if state.get("supervisor_preassessed") and review_action is None:
+            return Command(
+                update={
+                    "status": "generating",
+                    "supervisor_preassessed": False,
+                    "updated_at": _now(),
+                    "error": None,
+                },
+                goto="question_generator",
             )
 
         is_regeneration = review_action == "regenerate"
@@ -63,7 +75,7 @@ def build_graph(
             return Command(update=update, goto="human_review")
         return Command(update=update, goto="question_generator")
 
-    async def question_generator_node(state: OrchestrationState) -> dict:
+    async def question_generator_node(state: OrchestrationState) -> Command:
         phase_started = perf_counter()
         target_question_id = state.get("target_question_id")
         prior_questions = state.get("questions", [])
@@ -81,6 +93,10 @@ def build_graph(
             instruction=instruction,
             selection=ModelSelection.model_validate(state["question_model"]),
             prior_questions=prior_questions,
+            session_questions=state.get("session_questions", []),
+            relation=state.get("question_relation", "none"),
+            parent_question_ids=state.get("parent_question_ids", []),
+            standalone_intent=state.get("standalone_intent", ""),
             feedback=state.get("review_feedback", ""),
         )
         if target_question_id:
@@ -108,9 +124,9 @@ def build_graph(
                 }
                 for index, candidate in enumerate(generated.questions, start=1)
             ]
-        return {
+        update = {
             "questions": questions,
-            "status": "awaiting_review",
+            "status": "awaiting_review" if questions else "ignored",
             "target_question_id": None,
             "question_generation_ms": int(
                 state.get("question_generation_ms") or 0
@@ -119,6 +135,10 @@ def build_graph(
             "updated_at": _now(),
             "error": None,
         }
+        return Command(
+            update=update,
+            goto="human_review" if questions else END,
+        )
 
     async def human_review_node(state: OrchestrationState) -> Command:
         # Keep interrupt first and this node side-effect free. LangGraph re-runs
@@ -211,12 +231,31 @@ def build_graph(
         }
 
     builder = StateGraph(OrchestrationState)
-    builder.add_node("supervisor", supervisor_node)
-    builder.add_node("question_generator", question_generator_node)
-    builder.add_node("human_review", human_review_node)
+    builder.add_node(
+        "supervisor",
+        supervisor_node,
+        destinations={
+            "question_generator": "delegate or regenerate",
+            "human_review": "review incomplete input",
+            "retrieval_placeholder": "validated questions",
+            END: "rejected",
+        },
+    )
+    builder.add_node(
+        "question_generator",
+        question_generator_node,
+        destinations={"human_review": "questions generated", END: "no question"},
+    )
+    builder.add_node(
+        "human_review",
+        human_review_node,
+        destinations={
+            "human_review": "next question",
+            "supervisor": "approve, reject, or regenerate",
+        },
+    )
     builder.add_node("retrieval_placeholder", retrieval_placeholder_node)
     builder.add_edge(START, "supervisor")
-    builder.add_edge("question_generator", "human_review")
     builder.add_edge("retrieval_placeholder", END)
-    return builder.compile(checkpointer=checkpointer)
+    return builder.compile(checkpointer=checkpointer, store=store)
 

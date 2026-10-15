@@ -1,22 +1,35 @@
 # liveqna
 
-Live audio is transcribed into a browser transcript. A user can capture a
-specific section, send it to a LangGraph workflow, and review retrieval-ready
-questions generated from that text.
+Live audio is transcribed into a browser transcript. A server-side session
+manager automatically groups transcript context, asks the LangGraph supervisor
+whether it is ready, and sends only ready candidates to question generation.
+The user then reviews each generated question independently.
 
 ## Question workflow
 
 ```text
-select project -> start live call -> captured text -> supervisor
-                                                     |
-                                                     v
-                               human review <- question generator
-                                  |    ^
-                                  +----+ regenerate
+select project -> Start Live Q&A -> automatic transcript buffer -> supervisor
+                                                                   | READY
+                                           WAIT retains context     v
+                                           IGNORE clears it   question generator
+                                                                   |
+                                                                   v
+                                                            human review
+                                                             |    ^
+                                                             +----+ regenerate
 
 human review -> validate -> retrieval placeholder
              -> reject   -> end
 ```
+
+The boundary manager runs asynchronously in the UI service. Silence, maximum
+wait, maximum words, and end-of-session finalization grace are configured with
+`LIVE_SESSION_SILENCE_MS`, `LIVE_SESSION_MAX_WAIT_MS`,
+`LIVE_SESSION_MAX_WORDS`, and `LIVE_SESSION_FINALIZE_GRACE_MS`. End Live Q&A
+stops capture and flushes the remaining transcript; it does not unload models.
+See the [automatic capture flow](services/capture/docs/live-session-question-flow.png).
+The current defaults and Czech/Belgium transcript-corpus measurements are recorded
+in the [parameter calibration report](services/capture/docs/live-session-parameter-calibration.md).
 
 The orchestrator is a separate Docker service with SQLite-backed LangGraph
 checkpoints. The UI supports editing, adding, removing, validating, rejecting,
