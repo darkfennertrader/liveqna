@@ -4,3 +4,4 @@ websockets==14.*
 httpx==0.28.*
 pydantic==2.*
 python-dotenv==1.*
+python-multipart==0.0.*

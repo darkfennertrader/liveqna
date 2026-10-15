@@ -1,0 +1,87 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "background": "#ffffff",
+    "primaryColor": "#eaf2ff",
+    "primaryTextColor": "#172033",
+    "primaryBorderColor": "#4776b9",
+    "lineColor": "#52606d",
+    "secondaryColor": "#eefaf2",
+    "tertiaryColor": "#fff7df",
+    "fontFamily": "Arial, sans-serif",
+    "clusterBkg": "#fbfcfe",
+    "clusterBorder": "#b8c2cf"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 34,
+    "rankSpacing": 48
+  }
+}}%%
+
+flowchart TB
+    subgraph SESSION["1. Live Q&A session"]
+        direction LR
+        START([Start Live Q&A]) --> CONTEXT[Lock session context<br/>Project and agent models]
+        CONTEXT --> STT[Live audio and STT<br/>Partial and final events]
+        STT --> MANAGER[LiveSessionManager<br/>Server-side and independent of the browser]
+    end
+
+    subgraph BOUNDARY["2. Automatic transcript boundary"]
+        direction LR
+        BUFFER[Rolling transcript buffer<br/>Append finalized text] --> ACTIVITY[Track latest speech activity]
+        ACTIVITY --> SILENCE[Configurable silence reached<br/><br/>LIVE_SESSION_<br/>SILENCE_MS<br/>Default: 1500 ms]
+        SILENCE --> CANDIDATE[Create transcript candidate<br/>Queue asynchronously]
+        BUFFER -. hard safety path .-> LIMITS[Force readiness check when<br/>either limit is reached<br/><br/>LIVE_SESSION_<br/>MAX_WAIT_MS<br/>Default: 10000 ms<br/><br/>LIVE_SESSION_<br/>MAX_WORDS<br/>Default: 150 words]
+        LIMITS --> CANDIDATE
+    end
+
+    MANAGER --> BUFFER
+
+    subgraph READINESS["3. Existing Supervisor checks readiness"]
+        direction TB
+        SUPERVISOR[Supervisor LLM<br/>Assess completeness and information intent]
+        SUPERVISOR --> DECISION{Structured decision}
+        DECISION --> WAIT[WAIT<br/>Retain the buffer and append more context]
+        DECISION --> IGNORE[IGNORE<br/>Clear irrelevant or non-question text<br/>No human-review card]
+        DECISION --> READY[READY<br/>Forward the same text and instruction<br/>Do not call the Supervisor twice]
+    end
+
+    CANDIDATE --> SUPERVISOR
+
+    subgraph GENERATION["4. Question generation and human review"]
+        direction LR
+        GENERATOR[Question Generator<br/>Create one or more questions] --> PRODUCED{Questions produced?}
+        PRODUCED --> NOQUESTION[NO QUESTIONS<br/>Continue listening]
+        PRODUCED --> QUESTIONS[QUESTIONS READY<br/>Show source text and questions]
+        QUESTIONS --> HUMAN[Human review per question<br/>Validate - Edit - Reject - Regenerate]
+        HUMAN --> RETRIEVAL[Retrieval placeholder<br/>Future phase]
+    end
+
+    READY --> GENERATOR
+
+    WAIT -.-> BUFFER
+    IGNORE -.-> BUFFER
+    NOQUESTION -.-> BUFFER
+
+    subgraph ENDING["5. End the session"]
+        direction LR
+        END([End Live Q&A]) --> GRACE[Wait for final utterance<br/><br/>LIVE_SESSION_<br/>FINALIZE_<br/>GRACE_MS<br/>Default: 3000 ms]
+        GRACE --> FINAL[Force remaining text to<br/>READY or IGNORE]
+        FINAL --> CLOSED([Session closed])
+    end
+
+    MANAGER -. user ends session .-> END
+    FINAL -.-> GENERATOR
+
+    classDef session fill:#eaf2ff,stroke:#4776b9,color:#172033,stroke-width:1.5px;
+    classDef manager fill:#fff7df,stroke:#b78516,color:#3d2c00,stroke-width:1.5px;
+    classDef agent fill:#f0ebff,stroke:#7457b8,color:#261b40,stroke-width:1.5px;
+    classDef human fill:#eefaf2,stroke:#3d8b5f,color:#163523,stroke-width:1.5px;
+    classDef terminal fill:#f5f7fa,stroke:#637083,color:#172033,stroke-width:1.5px;
+
+    class START,CONTEXT,STT session;
+    class MANAGER,BUFFER,ACTIVITY,SILENCE,LIMITS,CANDIDATE,WAIT,IGNORE,NOQUESTION,GRACE,FINAL manager;
+    class SUPERVISOR,DECISION,READY,GENERATOR,PRODUCED agent;
+    class QUESTIONS,HUMAN,RETRIEVAL human;
+    class END,CLOSED terminal;

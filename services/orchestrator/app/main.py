@@ -5,6 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
             graph=graph, repository=repository
         )
         app.state.orchestration = orchestration
+        app.state.model_factory = models
         try:
             yield
         finally:
@@ -86,9 +88,55 @@ def _service(request: Request) -> OrchestrationService:
     return request.app.state.orchestration
 
 
+def _models(request: Request) -> ModelFactory:
+    return request.app.state.model_factory
+
+
+async def _set_ollama_keep_alive(model: str, keep_alive: int) -> None:
+    base_url = os.environ.get(
+        "OLLAMA_BASE_URL", "http://host.docker.internal:11434"
+    ).rstrip("/")
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{base_url}/api/generate",
+            json={"model": model, "prompt": "", "keep_alive": keep_alive},
+        )
+        response.raise_for_status()
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/runtime/status")
+async def runtime_status(request: Request) -> dict:
+    return {
+        "active_run_count": _service(request).active_run_count,
+        "local_models": _models(request).local_model_names(),
+    }
+
+
+@app.post("/runtime/unload-models")
+async def unload_runtime_models(request: Request) -> dict:
+    service = _service(request)
+    if service.active_run_count:
+        raise HTTPException(
+            status_code=409,
+            detail="Live Q&A inference is currently running",
+        )
+    factory = _models(request)
+    model_names = factory.local_model_names()
+    try:
+        for model_name in model_names:
+            await _set_ollama_keep_alive(model_name, 0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"failed to unload local Live Q&A model: {exc}",
+        ) from exc
+    factory.clear_local_models()
+    return {"status": "unloaded", "models": model_names}
 
 
 @app.get("/model-options", response_model=ModelOptionsResponse)

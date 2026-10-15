@@ -127,6 +127,8 @@ def build_graph(
             {
                 "run_id": state["run_id"],
                 "source_text": state["source_text"],
+                "project_id": state.get("project_id"),
+                "project_name": state.get("project_name"),
                 "questions": state.get("questions", []),
                 "instruction": "Review, edit, reject, or regenerate each question independently.",
             },

@@ -35,8 +35,10 @@ class BlockingGraph(FakeGraph):
         super().__init__()
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.initial_state = None
 
     async def ainvoke(self, state, config):
+        self.initial_state = state
         self.started.set()
         await self.release.wait()
 
@@ -72,6 +74,8 @@ async def test_enqueue_run_returns_before_graph_finishes() -> None:
     accepted = await service.enqueue_run(
         CreateRunRequest(
             text="What changed?",
+            project_id="project-1",
+            project_name="Client A",
             supervisor_model=selection,
             question_model=selection,
         )
@@ -81,5 +85,7 @@ async def test_enqueue_run_returns_before_graph_finishes() -> None:
     assert accepted.accepted is True
     assert accepted.status == "generating"
     assert repository.created[0][0] == accepted.run_id
+    assert graph.initial_state["project_id"] == "project-1"
+    assert graph.initial_state["project_name"] == "Client A"
 
     await service.shutdown()

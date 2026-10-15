@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from .migrations import apply_migrations
@@ -16,6 +17,7 @@ class Database:
             timeout=settings.dependency_timeout_seconds,
             open=False,
             name="liveqna-ingestion",
+            kwargs={"row_factory": dict_row},
         )
         self.applied_migrations: list[str] = []
 
@@ -33,7 +35,11 @@ class Database:
         ) as connection:
             cursor = await connection.execute("SELECT 1")
             row = await cursor.fetchone()
-        return row == (1,)
+        return row is not None and next(iter(row.values())) == 1
+
+    @property
+    def pool(self) -> AsyncConnectionPool:
+        return self._pool
 
     async def close(self) -> None:
         await self._pool.close()

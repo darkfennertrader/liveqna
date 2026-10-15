@@ -110,6 +110,8 @@ class SupervisorDecision(BaseModel):
 
 class CreateRunRequest(BaseModel):
     text: str = Field(min_length=1, max_length=30_000)
+    project_id: str = Field(min_length=1, max_length=100)
+    project_name: str = Field(min_length=1, max_length=200)
     supervisor_model: ModelSelection
     question_model: ModelSelection
 
@@ -119,6 +121,14 @@ class CreateRunRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("captured text must not be blank")
+        return value
+
+    @field_validator("project_id", "project_name")
+    @classmethod
+    def strip_project(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("project must not be blank")
         return value
 
 
@@ -143,6 +153,8 @@ class ReviewDecision(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     source_text: str
+    project_id: str | None = None
+    project_name: str | None = None
     status: RunStatus
     questions: list[QuestionDraft] = Field(default_factory=list)
     attempt: int = 0

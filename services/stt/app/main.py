@@ -4,6 +4,7 @@ transcript events.
 Endpoints:
   GET  /health
   POST /configure           -- swap/configure the active backend
+  POST /runtime/unload      -- release the active backend and its GPU memory
   WS   /ws/audio            -- capture service pushes raw PCM16 frames here
   WS   /ws/transcript        -- ui subscribes here for partial/final events
 """
@@ -126,7 +127,28 @@ def _default_config() -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "backend": state.backend_name}
+    return {
+        "status": "ok",
+        "backend": state.backend_name,
+        "model_loaded": state.backend is not None,
+    }
+
+
+async def _unload_backend_locked() -> str | None:
+    """Release the current backend while ``state.lock`` is held."""
+    task = state.broadcast_task
+    state.broadcast_task = None
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    backend = state.backend
+    backend_name = state.backend_name
+    state.backend = None
+    state.backend_name = None
+    if backend is not None:
+        await backend.close()
+    return backend_name
 
 
 @app.post("/configure")
@@ -135,12 +157,7 @@ async def configure(req: ConfigureRequest):
     merged = {**_default_config(), **cfg}
 
     async with state.lock:
-        if state.broadcast_task is not None:
-            state.broadcast_task.cancel()
-            state.broadcast_task = None
-        if state.backend is not None:
-            await state.backend.close()
-            state.backend = None
+        await _unload_backend_locked()
 
         try:
             if merged.get("backend") == "local":
@@ -156,6 +173,18 @@ async def configure(req: ConfigureRequest):
         state.broadcast_task = asyncio.create_task(state.broadcast_loop(backend))
 
     return {"status": "configured", "backend": state.backend_name}
+
+
+@app.post("/runtime/unload")
+async def unload_backend():
+    async with state.lock:
+        unloaded = await _unload_backend_locked()
+    logger.info("STT backend unloaded: %s", unloaded or "already unloaded")
+    return {
+        "status": "unloaded",
+        "backend": unloaded,
+        "model_loaded": False,
+    }
 
 
 @app.on_event("startup")

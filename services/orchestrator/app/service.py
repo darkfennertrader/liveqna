@@ -36,6 +36,10 @@ class OrchestrationService:
         self._tasks: set[asyncio.Task] = set()
         self._active_run_ids: set[str] = set()
 
+    @property
+    def active_run_count(self) -> int:
+        return len(self._active_run_ids)
+
     @staticmethod
     def _config(run_id: str) -> dict:
         return {"configurable": {"thread_id": run_id}, "recursion_limit": 100}
@@ -58,6 +62,8 @@ class OrchestrationService:
         initial_state = {
             "run_id": run_id,
             "source_text": request.text,
+            "project_id": request.project_id,
+            "project_name": request.project_name,
             "supervisor_model": request.supervisor_model.model_dump(mode="json"),
             "question_model": request.question_model.model_dump(mode="json"),
             "status": "supervising",

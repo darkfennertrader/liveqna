@@ -9,6 +9,7 @@ import httpx
 CAPTURE_URL = os.environ.get("CAPTURE_URL", "http://capture:8081")
 STT_URL = os.environ.get("STT_URL", "http://stt:8082")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://orchestrator:8083")
+INGESTION_URL = os.environ.get("INGESTION_URL", "http://ingestion:8084")
 
 
 class UpstreamServiceError(RuntimeError):
@@ -86,8 +87,23 @@ async def stt_health() -> dict:
         return resp.json()
 
 
+async def unload_stt() -> dict:
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(f"{STT_URL}/runtime/unload")
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def orchestrator_model_options() -> dict:
     return await _orchestrator_request("GET", "/model-options")
+
+
+async def orchestrator_runtime_status() -> dict:
+    return await _orchestrator_request("GET", "/runtime/status")
+
+
+async def unload_orchestrator_models() -> dict:
+    return await _orchestrator_request("POST", "/runtime/unload-models")
 
 
 async def create_orchestration_run(payload: dict) -> dict:
@@ -112,4 +128,126 @@ async def get_orchestration_run_status(run_id: str) -> dict:
 
 async def review_orchestration_run(run_id: str, payload: dict) -> dict:
     return await _orchestrator_request("POST", f"/runs/{run_id}/review", payload)
+
+
+async def _ingestion_request(
+    method: str,
+    path: str,
+    *,
+    payload: dict | None = None,
+    data: dict | None = None,
+    files: dict | None = None,
+    timeout: float = 120,
+):
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.request(
+            method,
+            f"{INGESTION_URL}{path}",
+            json=payload,
+            data=data,
+            files=files,
+        )
+    if response.is_error:
+        try:
+            body = response.json()
+            detail = body.get("detail") or body.get("error") or response.text
+        except ValueError:
+            detail = response.text
+        raise UpstreamServiceError(
+            str(detail or "ingestion request failed"), response.status_code
+        )
+    if response.status_code == 204 or not response.content:
+        return None
+    return response.json()
+
+
+async def list_ingestion_projects() -> list[dict]:
+    return await _ingestion_request("GET", "/projects")
+
+
+async def ingestion_runtime_status() -> dict:
+    return await _ingestion_request("GET", "/runtime/status")
+
+
+async def unload_ingestion_models() -> dict:
+    return await _ingestion_request("POST", "/runtime/unload-models")
+
+
+async def create_ingestion_project(name: str) -> dict:
+    return await _ingestion_request("POST", "/projects", payload={"name": name})
+
+
+async def list_ingestion_documents(project_id: str) -> list[dict]:
+    return await _ingestion_request("GET", f"/projects/{project_id}/documents")
+
+
+async def create_ingestion_document(
+    project_id: str, title: str, content_profile: str
+) -> dict:
+    # document_type is a legacy governance field in the ingestion registry.
+    # Source format is inferred by the extractor from the uploaded extension.
+    internal_type = "transcript" if content_profile == "transcript" else "official"
+    return await _ingestion_request(
+        "POST",
+        f"/projects/{project_id}/documents",
+        payload={
+            "title": title,
+            "document_type": internal_type,
+            "content_profile": content_profile,
+        },
+    )
+
+
+async def delete_ingestion_document(document_id: str) -> dict:
+    return await _ingestion_request("DELETE", f"/documents/{document_id}")
+
+
+async def list_ingestion_versions(document_id: str) -> list[dict]:
+    return await _ingestion_request("GET", f"/documents/{document_id}/versions")
+
+
+async def upload_ingestion_version(
+    document_id: str,
+    *,
+    version_label: str,
+    content_profile: str,
+    retrieval_metadata: str,
+    filename: str,
+    content_type: str,
+    file_object,
+) -> dict:
+    return await _ingestion_request(
+        "POST",
+        f"/documents/{document_id}/versions",
+        data={
+            "version_label": version_label,
+            "content_profile": content_profile,
+            "retrieval_metadata": retrieval_metadata,
+        },
+        files={"file": (filename, file_object, content_type)},
+    )
+
+
+async def get_ingestion_version(version_id: str) -> dict:
+    return await _ingestion_request("GET", f"/versions/{version_id}")
+
+
+async def get_ingestion_extraction(version_id: str) -> dict:
+    return await _ingestion_request("GET", f"/versions/{version_id}/extraction")
+
+
+async def reingest_version(version_id: str) -> dict:
+    return await _ingestion_request("POST", f"/versions/{version_id}/extract")
+
+
+async def get_normalized_document(version_id: str) -> dict:
+    return await _ingestion_request("GET", f"/versions/{version_id}/normalized")
+
+
+async def approve_ingestion_version(version_id: str) -> dict:
+    return await _ingestion_request("POST", f"/versions/{version_id}/approve")
+
+
+async def delete_ingestion_draft(version_id: str) -> dict:
+    return await _ingestion_request("DELETE", f"/versions/{version_id}")
 

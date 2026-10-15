@@ -1,0 +1,108 @@
+@page {
+  size: A4 landscape;
+  margin: 12mm;
+}
+
+html {
+  background: white;
+}
+
+body {
+  max-width: none;
+  margin: 0;
+  color: #172033;
+  background: white;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11pt;
+  line-height: 1.35;
+}
+
+h1 {
+  margin: 0 0 8mm;
+  color: #123b66;
+  font-size: 24pt;
+}
+
+h2 {
+  margin-top: 8mm;
+  color: #123b66;
+  font-size: 16pt;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 8.5pt;
+}
+
+th,
+td {
+  padding: 2.5mm;
+  border: 1px solid #aab6c5;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+th {
+  color: white;
+  background: #123b66;
+  text-align: left;
+}
+
+tr:nth-child(even) td {
+  background: #eef4f8;
+}
+
+tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+th:nth-child(1),
+td:nth-child(1),
+th:nth-child(2),
+td:nth-child(2) {
+  width: 18%;
+}
+
+th:nth-child(3),
+td:nth-child(3) {
+  width: 9%;
+}
+
+th:nth-child(4),
+td:nth-child(4),
+th:nth-child(5),
+td:nth-child(5) {
+  width: 10%;
+}
+
+th:nth-child(6),
+td:nth-child(6) {
+  width: 35%;
+}
+
+code {
+  color: #172033;
+  background: #e8edf3;
+  white-space: normal;
+}
+
+a {
+  color: #075a9c;
+  text-decoration: none;
+}
+
+img {
+  max-width: 100%;
+  max-height: 125mm;
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+li {
+  margin-bottom: 2mm;
+}

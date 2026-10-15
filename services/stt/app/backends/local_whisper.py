@@ -135,9 +135,13 @@ class LocalWhisperBackend(TranscriberBackend):
 
     async def close(self) -> None:
         self._closed = True
+        self._pending_partial = None
         # Drop the model reference and release CUDA memory held by
         # ctranslate2 so switching to an online backend frees VRAM.
-        del self._model
+        # Wait for an in-flight decode before deleting the model it uses.
+        async with self._decode_lock:
+            if hasattr(self, "_model"):
+                del self._model
         import gc
 
         gc.collect()

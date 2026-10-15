@@ -7,9 +7,12 @@ questions generated from that text.
 ## Question workflow
 
 ```text
-captured text -> supervisor -> question generator -> human review
-                                      ^                 |
-                                      +---- regenerate -+
+select project -> start live call -> captured text -> supervisor
+                                                     |
+                                                     v
+                               human review <- question generator
+                                  |    ^
+                                  +----+ regenerate
 
 human review -> validate -> retrieval placeholder
              -> reject   -> end
@@ -47,6 +50,24 @@ call.
 docker compose up --build
 ```
 
+## GPU runtime switching
+
+The local Live Q&A transcription model is preloaded by default. Runtime
+ownership changes only from the two start actions:
+
+- **Start ingestion:** when ingestion is configured with local Ollama models,
+  capture is stopped and the local Live Q&A models are unloaded before the
+  upload jobs begin. With remote-only ingestion, both workflows remain
+  available in parallel and no Live Q&A model is unloaded.
+- **Start Live Q&A:** any idle local ingestion models are unloaded, then the
+  configured transcription model is loaded if it is not already resident.
+  Starting Live Q&A is rejected while a local-model ingestion job is active.
+- **Stop Live Q&A:** stops audio capture only. It deliberately leaves the Live
+  Q&A model loaded for a low-latency restart.
+
+Remote OpenAI models do not use local GPU memory and therefore do not require
+runtime unloading.
+
 Run the orchestrator tests without starting services:
 
 ```bash
@@ -57,8 +78,25 @@ UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=services/orchestrator \
 ## Offline ingestion
 
 The offline ingestion service is being delivered in independently reviewed
-phases. Phase 0 adds its PostgreSQL-backed service foundation and dependency
-health checks; it does not yet ingest documents or change the UI.
+phases. Phases 0 and 1 provide its PostgreSQL-backed foundation plus the
+project, document-version, and approval lifecycle. The Phase 2 extraction
+baseline supports PDF, PPTX, XLSX, DOCX, Markdown, and text and is awaiting
+representative-file review. The UI now includes an **Ingestion** tab for
+multi-file asynchronous upload, per-version content profiles and user-defined
+retrieval metadata, normalization progress, normalized JSON download, and
+explicit approval or rejection. A presentation requiring review shows the full
+host path of its stored source and offers **Accept**, **Reingest**, and
+**Reject**. Reingest rereads that same editable draft file, recalculates its
+content hash, and replaces the draft's normalized output asynchronously. This
+phase stops at normalization: chunking, embeddings, and Qdrant publication are
+not implemented yet.
+
+The ingestion library groups every version under its document. The document
+**×** action requires confirmation and queues a complete background purge. It
+waits for any running extraction, removes future Qdrant points and all stored
+artifacts, then deletes the document, versions, runs, and chunk records. Failed
+purges remain visible and can be retried; completed deletions retain only a
+small audit tombstone.
 
 The reviewed lifecycle and phased implementation plan are documented in
 [`services/ingestion/README.md`](services/ingestion/README.md).

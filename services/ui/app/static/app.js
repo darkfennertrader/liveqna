@@ -3,6 +3,8 @@
 // capture and stt.
 
 const sourceSelect = document.getElementById("source-select");
+const liveProjectSelect = document.getElementById("live-project-select");
+const refreshLiveProjectsBtn = document.getElementById("refresh-live-projects");
 const backendSelect = document.getElementById("backend-select");
 const transcriptEl = document.getElementById("transcript");
 const connDot = document.getElementById("conn-dot");
@@ -40,9 +42,26 @@ const supervisorParametersEl = document.getElementById("supervisor-parameters");
 const questionProviderEl = document.getElementById("question-provider");
 const questionModelEl = document.getElementById("question-model");
 const questionParametersEl = document.getElementById("question-parameters");
+const ingestionProjectSelect = document.getElementById("ingestion-project-select");
+const ingestionNewProjectGroup = document.getElementById("ingestion-new-project-group");
+const ingestionNewProjectEl = document.getElementById("ingestion-new-project");
+const ingestionFileInputEl = document.getElementById("ingestion-file-input");
+const ingestionSelectBtn = document.getElementById("ingestion-select-btn");
+const ingestionStartBtn = document.getElementById("ingestion-start-btn");
+const ingestionRefreshBtn = document.getElementById("ingestion-refresh-btn");
+const ingestionFileListEl = document.getElementById("ingestion-file-list");
+const ingestionSelectionEmptyEl = document.getElementById("ingestion-selection-empty");
+const ingestionLibraryEl = document.getElementById("ingestion-library");
+const ingestionLibraryEmptyEl = document.getElementById("ingestion-library-empty");
 
 let providerCatalog = [];
 const agentParameterState = { supervisor: {}, question: {} };
+let ingestionSelections = [];
+let ingestionLibrary = [];
+let ingestionLibraryLoading = false;
+let ingestionPollTimer = null;
+const ingestionDetails = new Map();
+let activeLiveProject = null;
 
 function agentConfigElements(kind) {
   return kind === "supervisor"
@@ -356,6 +375,75 @@ function renderSources(sources) {
   }
 }
 
+function selectedLiveProject() {
+  const option = liveProjectSelect.selectedOptions[0];
+  if (!option || !option.value) return null;
+  return { id: option.value, name: option.dataset.projectName || option.textContent };
+}
+
+function selectedIngestionProjectName() {
+  if (ingestionProjectSelect.value === "__new__") {
+    return ingestionNewProjectEl.value.trim();
+  }
+  const option = ingestionProjectSelect.selectedOptions[0];
+  return option?.dataset.projectName || "";
+}
+
+function updateIngestionProjectChoice() {
+  const creating = ingestionProjectSelect.value === "__new__";
+  ingestionNewProjectGroup.style.display = creating ? "block" : "none";
+  renderIngestionSelections();
+}
+
+async function loadProjectSelectors() {
+  const previousLive = liveProjectSelect.value;
+  const previousIngestion = ingestionProjectSelect.value;
+  refreshLiveProjectsBtn.disabled = true;
+  try {
+    const projects = await requestJson("/api/ingestion/projects");
+    liveProjectSelect.innerHTML = "";
+    ingestionProjectSelect.innerHTML = "";
+
+    const livePlaceholder = document.createElement("option");
+    livePlaceholder.value = "";
+    livePlaceholder.textContent = projects.length ? "Select project..." : "No projects available";
+    liveProjectSelect.appendChild(livePlaceholder);
+    const ingestionPlaceholder = document.createElement("option");
+    ingestionPlaceholder.value = "";
+    ingestionPlaceholder.textContent = "Select project...";
+    ingestionProjectSelect.appendChild(ingestionPlaceholder);
+
+    for (const project of projects) {
+      for (const select of [liveProjectSelect, ingestionProjectSelect]) {
+        const option = document.createElement("option");
+        option.value = project.id;
+        option.dataset.projectName = project.name;
+        option.textContent = project.name;
+        select.appendChild(option);
+      }
+    }
+    const createNew = document.createElement("option");
+    createNew.value = "__new__";
+    createNew.textContent = "+ Create new project";
+    ingestionProjectSelect.appendChild(createNew);
+
+    if ([...liveProjectSelect.options].some((option) => option.value === previousLive)) {
+      liveProjectSelect.value = previousLive;
+    }
+    if ([...ingestionProjectSelect.options].some((option) => option.value === previousIngestion)) {
+      ingestionProjectSelect.value = previousIngestion;
+    }
+  } catch (error) {
+    liveProjectSelect.innerHTML = '<option value="">Projects unavailable</option>';
+    ingestionProjectSelect.innerHTML = '<option value="">Projects unavailable</option><option value="__new__">+ Create new project</option>';
+    setStatus(`Could not load projects: ${error.message}`, false);
+  } finally {
+    refreshLiveProjectsBtn.disabled = false;
+    updateIngestionProjectChoice();
+    updateCaptureButtons();
+  }
+}
+
 // Button-enablement rules (see conversation history):
 //   - Start (audio pipeline) is disabled unless the live-transcript
 //     WebSocket is connected AND no capture session is already running
@@ -368,9 +456,20 @@ function renderSources(sources) {
 //     push-to-talk Stop is pressed, only Stop re-enables (Start stays
 //     disabled because the pipeline is still running).
 function updateCaptureButtons() {
-  startBtn.disabled = !wsConnected || captureRunning || pttCapturing || startPending;
+  const project = selectedLiveProject();
+  startBtn.disabled = !wsConnected || !project || captureRunning || pttCapturing || startPending;
   stopBtn.disabled = !captureRunning || pttCapturing;
-  startGateHint.style.display = wsConnected ? "none" : "block";
+  liveProjectSelect.disabled = captureRunning || pttCapturing || startPending;
+  refreshLiveProjectsBtn.disabled = captureRunning || pttCapturing || startPending;
+  if (!project) {
+    startGateHint.textContent = "Select a project before starting the live call.";
+    startGateHint.style.display = "block";
+  } else if (!wsConnected) {
+    startGateHint.textContent = "Waiting for live transcript connection...";
+    startGateHint.style.display = "block";
+  } else {
+    startGateHint.style.display = "none";
+  }
 }
 
 
@@ -574,7 +673,15 @@ function finalizePushToTalkCapture() {
   // stretches were queued, so we deliberately do NOT clear it here.
 
   if (text) {
-    const item = { id: ++capturedIdCounter, text, status: "pending", ts: Date.now() };
+    const project = activeLiveProject || selectedLiveProject();
+    const item = {
+      id: ++capturedIdCounter,
+      text,
+      status: "pending",
+      ts: Date.now(),
+      projectId: project?.id || null,
+      projectName: project?.name || null,
+    };
     capturedItems.push(item);
     renderCapturedList();
   }
@@ -760,6 +867,14 @@ function openCapturedModal(item) {
 
 async function sendCapturedItem(item, sendBtnEl) {
   if (sendBtnEl) sendBtnEl.disabled = true;
+  const project = item.projectId
+    ? { id: item.projectId, name: item.projectName }
+    : selectedLiveProject();
+  if (!project) {
+    setStatus("This capture has no project. Select a project before sending it.", false);
+    if (sendBtnEl) sendBtnEl.disabled = false;
+    return;
+  }
   startPhaseIndicator("generation");
   try {
     const data = await requestJson("/api/push_to_talk/send", {
@@ -767,6 +882,8 @@ async function sendCapturedItem(item, sendBtnEl) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: item.text,
+        project_id: project.id,
+        project_name: project.name,
         supervisor_model: agentModelSelection("supervisor"),
         question_model: agentModelSelection("question"),
       }),
@@ -775,6 +892,8 @@ async function sendCapturedItem(item, sendBtnEl) {
     upsertOrchestrationRun({
       run_id: data.run_id,
       source_text: item.text,
+      project_id: project.id,
+      project_name: project.name,
       status: "generating",
       questions: [],
       attempt: 0,
@@ -826,6 +945,540 @@ async function requestJson(url, options = {}) {
   }
   return body;
 }
+
+// --- asynchronous document ingestion -------------------------------------
+
+function humanFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseRetrievalMetadata(value) {
+  const text = value.trim();
+  if (!text) return {};
+  if (text.startsWith("{")) {
+    const parsed = JSON.parse(text);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error("Metadata JSON must be an object.");
+    }
+    return parsed;
+  }
+  const result = {};
+  for (const [index, rawLine] of text.split("\n").entries()) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`Metadata line ${index + 1} must use key=value.`);
+    }
+    const key = line.slice(0, separator).trim();
+    const rawValue = line.slice(separator + 1).trim();
+    if (!key || !rawValue) {
+      throw new Error(`Metadata line ${index + 1} needs both a key and value.`);
+    }
+    try {
+      result[key] = JSON.parse(rawValue);
+    } catch (_) {
+      result[key] = rawValue;
+    }
+  }
+  return result;
+}
+
+function ingestionStatusNode(selection) {
+  const wrapper = document.createElement("span");
+  wrapper.className = `ingestion-status ${selection.status}`;
+  if (selection.status === "uploading" || selection.status === "queued") {
+    const spinner = document.createElement("span");
+    spinner.className = "ingestion-spinner";
+    spinner.title = "Working in the background";
+    wrapper.appendChild(spinner);
+  } else {
+    wrapper.textContent = selection.status.replaceAll("_", " ");
+  }
+  return wrapper;
+}
+
+function renderIngestionSelections() {
+  ingestionFileListEl.innerHTML = "";
+  ingestionSelectionEmptyEl.style.display = ingestionSelections.length ? "none" : "block";
+  ingestionStartBtn.disabled = !selectedIngestionProjectName() || !ingestionSelections.some(
+    (item) => item.status === "selected" || item.status === "error"
+  );
+
+  for (const selection of ingestionSelections) {
+    const card = document.createElement("div");
+    card.className = "ingestion-file";
+    const head = document.createElement("div");
+    head.className = "ingestion-file-head";
+    const nameWrap = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "ingestion-filename";
+    name.textContent = selection.file.name;
+    const size = document.createElement("div");
+    size.className = "ingestion-file-meta";
+    size.textContent = humanFileSize(selection.file.size);
+    nameWrap.append(name, size);
+    head.append(nameWrap, ingestionStatusNode(selection));
+    card.appendChild(head);
+
+    const profileLabel = document.createElement("label");
+    profileLabel.textContent = "Content profile (extraction hint and retrieval filter)";
+    const profile = document.createElement("input");
+    profile.type = "text";
+    profile.value = selection.contentProfile;
+    profile.placeholder = "general_document";
+    profile.disabled = selection.status === "uploading" || selection.status === "queued";
+    profile.addEventListener("input", () => { selection.contentProfile = profile.value; });
+
+    const metadataLabel = document.createElement("label");
+    metadataLabel.textContent = "User retrieval metadata";
+    const metadata = document.createElement("textarea");
+    metadata.value = selection.metadataText;
+    metadata.placeholder = "country=Italy\nproduct=Life\nyear=2026";
+    metadata.disabled = profile.disabled;
+    metadata.addEventListener("input", () => { selection.metadataText = metadata.value; });
+    const hint = document.createElement("p");
+    hint.className = "ingestion-help";
+    hint.textContent = "One key=value per line, or a JSON object. These values stay separate from future AI-generated metadata.";
+    card.append(profileLabel, profile, metadataLabel, metadata, hint);
+
+    if (selection.error) {
+      const error = document.createElement("div");
+      error.className = "ingestion-error";
+      error.textContent = selection.error;
+      card.appendChild(error);
+    }
+    if (selection.status === "selected" || selection.status === "error") {
+      const actions = document.createElement("div");
+      actions.className = "ingestion-actions";
+      const remove = document.createElement("button");
+      remove.className = "danger";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        ingestionSelections = ingestionSelections.filter((item) => item.id !== selection.id);
+        renderIngestionSelections();
+      });
+      actions.appendChild(remove);
+      card.appendChild(actions);
+    }
+    ingestionFileListEl.appendChild(card);
+  }
+}
+
+function addIngestionFiles(files) {
+  for (const file of files) {
+    ingestionSelections.push({
+      id: crypto.randomUUID(),
+      file,
+      contentProfile: file.name.toLowerCase().endsWith(".pptx")
+        ? "general_presentation"
+        : "general_document",
+      metadataText: "",
+      status: "selected",
+      error: "",
+    });
+  }
+  ingestionFileInputEl.value = "";
+  renderIngestionSelections();
+}
+
+async function uploadIngestionSelection(selection) {
+  selection.status = "uploading";
+  selection.error = "";
+  renderIngestionSelections();
+  try {
+    const metadata = parseRetrievalMetadata(selection.metadataText);
+    const profile = selection.contentProfile.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9_]{0,99}$/.test(profile)) {
+      throw new Error("Content profile must use lower-case letters, numbers, and underscores.");
+    }
+    const form = new FormData();
+    form.append("file", selection.file);
+    const projectName = selectedIngestionProjectName();
+    if (!projectName) throw new Error("Select an existing project or enter a new project name.");
+    form.append("project_name", projectName);
+    form.append("content_profile", profile);
+    form.append("retrieval_metadata", JSON.stringify(metadata));
+    const accepted = await requestJson("/api/ingestion/upload", {
+      method: "POST",
+      body: form,
+    });
+    selection.status = "queued";
+    selection.versionId = accepted.version.id;
+  } catch (error) {
+    selection.status = "error";
+    selection.error = error.message;
+  }
+  renderIngestionSelections();
+}
+
+async function startIngestion() {
+  const pending = ingestionSelections.filter(
+    (item) => item.status === "selected" || item.status === "error"
+  );
+  if (!pending.length) return;
+  ingestionStartBtn.disabled = true;
+  try {
+    const runtime = await requestJson("/api/runtime/start-ingestion", { method: "POST" });
+    const detail = runtime.mode === "parallel"
+      ? " Remote-only ingestion is running in parallel with Live Q&A."
+      : " Live Q&A models were unloaded so ingestion can use the GPU.";
+    setStatus(`Started ${pending.length} document ingestion job${pending.length === 1 ? "" : "s"} in the background.${detail}`);
+  } catch (error) {
+    setStatus(`Could not start ingestion: ${error.message}`, false);
+    renderIngestionSelections();
+    return;
+  }
+  await Promise.allSettled(pending.map(uploadIngestionSelection));
+  await Promise.all([loadIngestionLibrary(), loadProjectSelectors()]);
+}
+
+function metadataTags(metadata, prefix = "") {
+  return Object.entries(metadata || {}).map(([key, value]) => {
+    const tag = document.createElement("span");
+    tag.className = "ingestion-tag";
+    tag.textContent = `${prefix}${key}=${Array.isArray(value) ? value.join(", ") : value}`;
+    return tag;
+  });
+}
+
+function downloadNormalized(versionId, filename) {
+  requestJson(`/api/ingestion/versions/${versionId}/normalized`)
+    .then((payload) => {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${filename}.normalized.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    })
+    .catch((error) => setStatus(`Normalized output download failed: ${error.message}`, false));
+}
+
+async function approveIngestionVersion(versionId) {
+  if (!window.confirm("Approve this normalized version? Any previously approved version of the same file will be archived.")) return;
+  try {
+    await requestJson(`/api/ingestion/versions/${versionId}/approve`, { method: "POST" });
+    setStatus("Document version approved. Its predecessor, if any, was archived.");
+    ingestionDetails.delete(versionId);
+    await loadIngestionLibrary(true);
+  } catch (error) {
+    setStatus(`Approval failed: ${error.message}`, false);
+  }
+}
+
+async function rejectIngestionVersion(versionId) {
+  if (!window.confirm("Reject and delete this draft version and its normalized artifacts?")) return;
+  try {
+    await requestJson(`/api/ingestion/versions/${versionId}`, { method: "DELETE" });
+    ingestionDetails.delete(versionId);
+    setStatus("Draft document version rejected and removed.");
+    await loadIngestionLibrary(true);
+  } catch (error) {
+    setStatus(`Rejection failed: ${error.message}`, false);
+  }
+}
+
+async function acceptReviewedVersion(versionId) {
+  if (!window.confirm("Accept this reviewed presentation and approve its normalized version?")) return;
+  try {
+    await requestJson(`/api/ingestion/versions/${versionId}/approve`, { method: "POST" });
+    ingestionDetails.delete(versionId);
+    setStatus("Presentation accepted. Gate 2 is now PASS.");
+    await loadIngestionLibrary(true);
+  } catch (error) {
+    setStatus(`Accept failed: ${error.message}`, false);
+  }
+}
+
+async function reingestVersion(versionId, sourcePath) {
+  if (!window.confirm(`Edit and save the source file first:\n\n${sourcePath}\n\nReingest it now from this same location?`)) return;
+  try {
+    await requestJson(`/api/ingestion/versions/${versionId}/reingest`, {
+      method: "POST",
+    });
+    ingestionDetails.delete(versionId);
+    setStatus("Presentation reingestion started in the background.");
+    await loadIngestionLibrary(true);
+  } catch (error) {
+    setStatus(`Reingestion failed: ${error.message}`, false);
+  }
+}
+
+async function deleteIngestionDocument(documentRecord, versionCount) {
+  const retry = documentRecord.deletion_status === "DELETE_FAILED";
+  const prompt = retry
+    ? `Retry deletion of "${documentRecord.title}" and all ${versionCount} version${versionCount === 1 ? "" : "s"}?`
+    : `Permanently delete "${documentRecord.title}" and all ${versionCount} version${versionCount === 1 ? "" : "s"}?\n\nThis removes its database records, stored files, normalized outputs, and any Qdrant points.`;
+  if (!window.confirm(prompt)) return;
+
+  documentRecord.deletion_status = "DELETING";
+  documentRecord.deletion_error = null;
+  renderIngestionLibrary();
+  try {
+    await requestJson(`/api/ingestion/documents/${documentRecord.id}`, {
+      method: "DELETE",
+    });
+    setStatus(`Deleting ${documentRecord.title} and its complete version history in the background.`);
+    if (ingestionPollTimer) clearTimeout(ingestionPollTimer);
+    ingestionPollTimer = setTimeout(() => loadIngestionLibrary(true), 500);
+  } catch (error) {
+    documentRecord.deletion_status = "DELETE_FAILED";
+    documentRecord.deletion_error = error.message;
+    renderIngestionLibrary();
+    setStatus(`Document deletion failed: ${error.message}`, false);
+  }
+}
+
+function renderIngestionVersion(documentRecord, version) {
+  const detail = ingestionDetails.get(version.id);
+  const extraction = detail?.extraction;
+  const processing = (detail?.version?.processing_status || version.processing_status).toLowerCase();
+  const lifecycle = (detail?.version?.status || version.status).toLowerCase();
+  const active = processing === "queued" || processing === "running";
+  const isPresentation = extraction?.source_format === "pptx"
+    || documentRecord.title.toLowerCase().endsWith(".pptx");
+  const reviewRequired = isPresentation && processing === "needs_review";
+  const passed = isPresentation && processing === "ready";
+  const card = document.createElement("div");
+  card.className = "ingestion-version";
+  const head = document.createElement("div");
+  head.className = "ingestion-version-head";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "ingestion-filename";
+  title.textContent = version.version_label;
+  const meta = document.createElement("div");
+  meta.className = "ingestion-file-meta";
+  meta.textContent = version.content_profile;
+  titleWrap.append(title, meta);
+  const status = document.createElement("span");
+  status.className = `ingestion-status ${lifecycle === "approved" || passed ? "approved" : processing}`;
+  if (active) {
+    const spinner = document.createElement("span");
+    spinner.className = "ingestion-spinner";
+    status.appendChild(spinner);
+  } else {
+    if (reviewRequired) status.textContent = "NEEDS REVIEW";
+    else if (passed) status.textContent = "PASS";
+    else status.textContent = lifecycle === "approved" ? "approved" : processing.replaceAll("_", " ");
+  }
+  head.append(titleWrap, status);
+  card.appendChild(head);
+
+  const tags = document.createElement("div");
+  tags.className = "ingestion-tags";
+  tags.append(...metadataTags(version.retrieval_metadata));
+  if (Object.keys(version.llm_metadata || {}).length) {
+    tags.append(...metadataTags(version.llm_metadata, "AI:"));
+  }
+  if (tags.childElementCount) card.appendChild(tags);
+
+  if (reviewRequired) {
+    const path = document.createElement("div");
+    path.className = "ingestion-review-path";
+    path.textContent = `See ${extraction.source_full_path || version.file_path}`;
+    card.appendChild(path);
+  } else if (extraction?.quality_report) {
+    const quality = document.createElement("div");
+    quality.className = "ingestion-file-meta";
+    quality.style.marginTop = "8px";
+    quality.textContent = `${extraction.quality_report.block_count ?? 0} normalized blocks · ${extraction.quality_report.text_character_count ?? 0} characters`;
+    card.appendChild(quality);
+  }
+  if (!reviewRequired && extraction?.error && extraction.error_code !== "DOCUMENT_DELETING") {
+    const error = document.createElement("div");
+    error.className = "ingestion-error";
+    error.textContent = extraction.error;
+    card.appendChild(error);
+  }
+
+  const deleting = documentRecord.deletion_status === "DELETING";
+  const actions = document.createElement("div");
+  actions.className = "ingestion-actions";
+  if (!deleting && reviewRequired && lifecycle === "draft") {
+    const accept = document.createElement("button");
+    accept.className = "primary";
+    accept.textContent = "Accept";
+    accept.addEventListener("click", () => acceptReviewedVersion(version.id));
+    const reingest = document.createElement("button");
+    reingest.textContent = "Reingest";
+    reingest.addEventListener("click", () =>
+      reingestVersion(
+        version.id,
+        extraction.source_full_path || version.file_path
+      )
+    );
+    const reject = document.createElement("button");
+    reject.className = "danger";
+    reject.textContent = "Reject";
+    reject.addEventListener("click", () => rejectIngestionVersion(version.id));
+    actions.append(accept, reingest, reject);
+  } else if (!deleting && ["ready", "needs_review"].includes(processing)) {
+    const normalized = document.createElement("button");
+    normalized.textContent = "Download normalized JSON";
+    normalized.addEventListener("click", () => downloadNormalized(version.id, documentRecord.title));
+    actions.appendChild(normalized);
+  }
+  if (!deleting && !reviewRequired && lifecycle === "draft" && processing === "ready") {
+    const approve = document.createElement("button");
+    approve.className = "primary";
+    approve.textContent = "Approve";
+    approve.addEventListener("click", () => approveIngestionVersion(version.id));
+    actions.appendChild(approve);
+  }
+  if (!deleting && !reviewRequired && lifecycle === "draft" && !active) {
+    const reject = document.createElement("button");
+    reject.className = "danger";
+    reject.textContent = "Reject";
+    reject.addEventListener("click", () => rejectIngestionVersion(version.id));
+    actions.appendChild(reject);
+  }
+  if (actions.childElementCount) card.appendChild(actions);
+  return card;
+}
+
+function renderIngestionLibrary() {
+  ingestionLibraryEl.innerHTML = "";
+  const groups = [...ingestionLibrary].sort((left, right) =>
+    `${left.project.name}/${left.document.title}`.localeCompare(
+      `${right.project.name}/${right.document.title}`
+    )
+  );
+  ingestionLibraryEmptyEl.style.display = groups.length ? "none" : "block";
+
+  for (const group of groups) {
+    const { project, document: documentRecord } = group;
+    const versions = [...group.versions].sort((left, right) =>
+      right.created_at.localeCompare(left.created_at)
+    );
+    const wrapper = document.createElement("section");
+    wrapper.className = "ingestion-document";
+    const head = document.createElement("div");
+    head.className = "ingestion-document-head";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "ingestion-filename";
+    title.textContent = documentRecord.title;
+    const meta = document.createElement("div");
+    meta.className = "ingestion-file-meta";
+    meta.textContent = `${project.name} · ${versions.length} version${versions.length === 1 ? "" : "s"}`;
+    titleWrap.append(title, meta);
+
+    const controls = document.createElement("div");
+    controls.className = "ingestion-document-controls";
+    if (documentRecord.deletion_status !== "ACTIVE") {
+      const deletionStatus = document.createElement("span");
+      deletionStatus.className = `ingestion-status ${documentRecord.deletion_status.toLowerCase()}`;
+      if (documentRecord.deletion_status === "DELETING") {
+        const spinner = document.createElement("span");
+        spinner.className = "ingestion-spinner";
+        deletionStatus.appendChild(spinner);
+      } else {
+        deletionStatus.textContent = "delete failed";
+      }
+      controls.appendChild(deletionStatus);
+    }
+    const remove = document.createElement("button");
+    remove.className = "ingestion-document-delete";
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.title = documentRecord.deletion_status === "DELETE_FAILED"
+      ? "Retry deleting this document"
+      : "Delete this document and all versions";
+    remove.setAttribute("aria-label", remove.title);
+    remove.disabled = documentRecord.deletion_status === "DELETING";
+    remove.addEventListener("click", () =>
+      deleteIngestionDocument(documentRecord, versions.length)
+    );
+    controls.appendChild(remove);
+    head.append(titleWrap, controls);
+    wrapper.appendChild(head);
+
+    if (documentRecord.deletion_error) {
+      const error = document.createElement("div");
+      error.className = "ingestion-error";
+      error.textContent = documentRecord.deletion_error;
+      wrapper.appendChild(error);
+    }
+    if (!versions.length) {
+      const empty = document.createElement("div");
+      empty.className = "ingestion-file-meta";
+      empty.textContent = "No versions registered.";
+      wrapper.appendChild(empty);
+    }
+    for (const version of versions) {
+      wrapper.appendChild(renderIngestionVersion(documentRecord, version));
+    }
+    ingestionLibraryEl.appendChild(wrapper);
+  }
+}
+
+async function loadIngestionLibrary(force = false) {
+  if (ingestionLibraryLoading && !force) return;
+  ingestionLibraryLoading = true;
+  if (ingestionPollTimer) clearTimeout(ingestionPollTimer);
+  try {
+    ingestionLibrary = await requestJson("/api/ingestion/library");
+    const versions = ingestionLibrary.flatMap((group) => group.versions);
+    const versionById = new Map(versions.map((version) => [version.id, version]));
+    for (const selection of ingestionSelections) {
+      if (!selection.versionId) continue;
+      const current = versionById.get(selection.versionId);
+      if (current) selection.status = current.processing_status.toLowerCase();
+    }
+    renderIngestionSelections();
+    const detailCandidates = versions.filter((version) =>
+      ["QUEUED", "RUNNING"].includes(version.processing_status)
+      || ["QUEUED", "RUNNING"].includes(
+        ingestionDetails.get(version.id)?.version?.processing_status
+      )
+      || !ingestionDetails.has(version.id)
+    );
+    await Promise.all(detailCandidates.map(async (version) => {
+      try {
+        ingestionDetails.set(
+          version.id,
+          await requestJson(`/api/ingestion/versions/${version.id}`)
+        );
+      } catch (_) {
+        // The library still provides enough information to render this version.
+      }
+    }));
+    renderIngestionLibrary();
+    const stillActive = ingestionLibrary.some(
+      (group) => group.document.deletion_status === "DELETING"
+    ) || versions.some((version) =>
+      ["QUEUED", "RUNNING"].includes(
+        ingestionDetails.get(version.id)?.version?.processing_status || version.processing_status
+      )
+    );
+    if (stillActive) {
+      ingestionPollTimer = setTimeout(() => loadIngestionLibrary(), 1500);
+    }
+  } catch (error) {
+    ingestionLibraryEl.innerHTML = "";
+    ingestionLibraryEmptyEl.style.display = "block";
+    ingestionLibraryEmptyEl.textContent = `Ingestion service unavailable: ${error.message}`;
+  } finally {
+    ingestionLibraryLoading = false;
+  }
+}
+
+ingestionSelectBtn.addEventListener("click", () => ingestionFileInputEl.click());
+ingestionFileInputEl.addEventListener("change", () => addIngestionFiles(ingestionFileInputEl.files));
+ingestionStartBtn.addEventListener("click", startIngestion);
+ingestionRefreshBtn.addEventListener("click", () => {
+  loadIngestionLibrary(true);
+  loadProjectSelectors();
+});
+ingestionProjectSelect.addEventListener("change", updateIngestionProjectChoice);
+ingestionNewProjectEl.addEventListener("input", renderIngestionSelections);
 
 function upsertOrchestrationRun(run) {
   const index = orchestrationRuns.findIndex((item) => item.run_id === run.run_id);
@@ -896,7 +1549,7 @@ function renderQuestions() {
     header.className = "question-run-header";
     const meta = document.createElement("span");
     meta.className = "question-run-meta";
-    meta.textContent = `${formatTimestamp(Date.parse(run.created_at))} · attempt ${run.attempt + 1}`;
+    meta.textContent = `${run.project_name ? `${run.project_name} · ` : ""}${formatTimestamp(Date.parse(run.created_at))} · attempt ${run.attempt + 1}`;
     const status = document.createElement("span");
     status.className = `run-status ${run.status}`;
     status.textContent = run.status.replaceAll("_", " ");
@@ -1337,9 +1990,17 @@ document.getElementById("refresh-sources").addEventListener("click", () => {
   send("refresh_sources");
 });
 
-startBtn.addEventListener("click", () => {
+liveProjectSelect.addEventListener("change", updateCaptureButtons);
+refreshLiveProjectsBtn.addEventListener("click", loadProjectSelectors);
+
+startBtn.addEventListener("click", async () => {
   if (!wsConnected) {
     setStatus("Cannot start capture: live transcript is not connected.", false);
+    return;
+  }
+  const project = selectedLiveProject();
+  if (!project) {
+    setStatus("Select a project before starting the live call.", false);
     return;
   }
   const selected = sourceSelect.value;
@@ -1353,7 +2014,17 @@ startBtn.addEventListener("click", () => {
   // startPending is cleared by the capture_started/capture_stopped/error
   // WS handlers below, whichever comes back.
   startPending = true;
+  activeLiveProject = project;
   updateCaptureButtons();
+  try {
+    await requestJson("/api/runtime/start-live", { method: "POST" });
+  } catch (error) {
+    startPending = false;
+    activeLiveProject = null;
+    updateCaptureButtons();
+    setStatus(`Could not start Live Q&A: ${error.message}`, false);
+    return;
+  }
   const { node, kind } = JSON.parse(selected);
   send("update_capture_config", {
     config: {
@@ -1404,8 +2075,10 @@ function clearAllState() {
   clearTranscript();
   capturedItems = [];
   orchestrationRuns = [];
+  ingestionSelections = [];
   renderCapturedList();
   renderQuestions();
+  renderIngestionSelections();
   saveHistory();
   statusEl.innerHTML = "";
 }
@@ -1462,6 +2135,9 @@ renderCapturedList();
 updateCaptureButtons();
 updatePttDot();
 renderQuestions();
+renderIngestionSelections();
+loadIngestionLibrary();
+loadProjectSelectors();
 loadAgentDefaults();
 loadOrchestrationRuns();
 connect();

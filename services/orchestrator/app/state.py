@@ -6,6 +6,8 @@ from typing import NotRequired, TypedDict
 class OrchestrationState(TypedDict):
     run_id: str
     source_text: str
+    project_id: NotRequired[str]
+    project_name: NotRequired[str]
     supervisor_model: dict
     question_model: dict
     status: str

@@ -84,7 +84,7 @@ async def apply_migrations(
             )
             row = await cursor.fetchone()
             if row is not None:
-                if row[0] != migration.checksum:
+                if row["checksum"] != migration.checksum:
                     raise MigrationError(
                         "checksum mismatch for applied migration "
                         f"{migration.version}_{migration.name}"

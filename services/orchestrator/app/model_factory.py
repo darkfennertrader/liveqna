@@ -45,6 +45,24 @@ class ModelFactory:
         model = self._get_normalized(normalized, adapter)
         return adapter.with_structured_output(model, schema)
 
+    def local_model_names(self) -> list[str]:
+        """Return Ollama models instantiated by this process."""
+        return sorted(
+            {
+                model
+                for provider, model, _parameters in self._models
+                if provider == "ollama"
+            }
+        )
+
+    def clear_local_models(self) -> None:
+        """Drop cached clients for local models after the runtime unloads them."""
+        self._models = {
+            key: model
+            for key, model in self._models.items()
+            if key[0] != "ollama"
+        }
+
 
 __all__ = ["ModelConfigurationError", "ModelFactory"]
 
