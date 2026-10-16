@@ -1,0 +1,39 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#eef4ff","primaryTextColor":"#101828","primaryBorderColor":"#175cd3","lineColor":"#475467","secondaryColor":"#fef3f2","tertiaryColor":"#ecfdf3","fontFamily":"Arial"},"flowchart":{"curve":"basis","nodeSpacing":42,"rankSpacing":62,"htmlLabels":true}}}%%
+flowchart TB
+    A["<b>Upload DOCX</b><br/>What: store immutable source and content hash<br/>Component: ingestion registry<br/>Script: app/service.py"]
+    B["<b>Validate OOXML package</b><br/>What: required parts, ZIP integrity, safe paths and resource limits<br/>Component: Python zipfile plus defusedxml<br/>Script: app/extraction/docx_validation.py"]
+    C["<b>Inventory Word content</b><br/>What: stories, properties, links, revisions, comments and embedded objects<br/>Component: direct OOXML parsing<br/>Script: app/extraction/docx.py"]
+
+    A -->|"source.docx"| B
+    B -->|"validated package inventory"| C
+
+    C -->|"native path"| D["<b>Authoritative native extraction</b><br/>What: headings, paragraphs, content controls, nested tables, links, headers, footers, notes, comments and image anchors<br/>Component: defusedxml OOXML traversal<br/>Script: app/extraction/docx.py"]
+    C -->|"visual path"| E["<b>Isolated Writer rendering</b><br/>What: convert DOCX to PDF and render every page without macros or shared profile state<br/>Component: LibreOffice Writer plus PyMuPDF<br/>Script: app/extraction/docx_renderer.py"]
+
+    E -->|"rendered/document.pdf + pages/page-NNNN.png"| F["<b>Native-to-page alignment</b><br/>What: map normalized Word blocks to rendered pages and flag weak matches<br/>Component: deterministic text matching<br/>Script: app/extraction/docx.py"]
+    D -->|"native blocks and element inventory"| F
+
+    E -->|"pages/page-NNNN.png"| G["<b>Independent visual extraction</b><br/>What: transcribe page-visible content and describe diagrams, images and layout<br/>Component: configured multimodal LLM<br/>Scripts: app/vision/openai.py or app/vision/ollama.py"]
+
+    F -->|"authoritative page evidence"| H["<b>Deterministic reconciliation</b><br/>What: native facts retain precedence; visual-only meaning is added; conflicts are quarantined<br/>Component: element fusion<br/>Scripts: app/extraction/docx.py and pptx_reconcile.py"]
+    G -->|"independent visual evidence"| H
+
+    H -->|"reconciled page evidence"| I["<b>Independent judge</b><br/>What: compare OOXML, rendered page, visual output and reconciliation<br/>Component: configured multimodal judge<br/>Scripts: app/vision/* and app/extraction/pptx_review.py"]
+    I -->|"page review decision"| J{"Material discrepancy?"}
+
+    J -->|"No: AUTO_PASS"| K["<b>Finalize normalization</b><br/>What: write common schema with Word inventory, blocks, pages, review and provenance<br/>Component: Pydantic schema and storage<br/>Scripts: app/extraction/models.py and app/storage.py"]
+    J -->|"Yes: NEEDS_REVIEW"| L["<b>Human Word-page review</b><br/>What: show material questions grouped by page<br/>Component: common review UI<br/>Scripts: docx_report.py and docx_resolution.py"]
+    L -->|"DOCX-WORD-PAGE-REVIEW-REPORT.md + answers"| M["<b>Resolve with AI</b><br/>What: propose corrected page Markdown grounded in the human answer<br/>Component: configured resolver LLM<br/>Scripts: app/service.py and app/vision/*"]
+    M -->|"human applies resolution"| K
+    K -->|"normalized.json"| N["<b>End of this phase</b><br/>No chunking, embedding or Qdrant indexing"]
+
+    classDef source fill:#eef4ff,stroke:#175cd3,stroke-width:2px,color:#101828;
+    classDef native fill:#ecfdf3,stroke:#039855,stroke-width:2px,color:#101828;
+    classDef visual fill:#fffaeb,stroke:#dc6803,stroke-width:2px,color:#101828;
+    classDef review fill:#fef3f2,stroke:#d92d20,stroke-width:2px,color:#101828;
+    classDef output fill:#f4f3ff,stroke:#6938ef,stroke-width:2px,color:#101828;
+    class A,B,C source;
+    class D,F,H native;
+    class E,G,I visual;
+    class J,L,M review;
+    class K,N output;

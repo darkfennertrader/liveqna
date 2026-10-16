@@ -1,5 +1,6 @@
 fastapi>=0.143,<1
 httpx>=0.28,<1
+markdown-it-py>=4.2,<5
 openai>=3.26,<4
 openpyxl>=3.1,<4
 defusedxml>=0.7,<1

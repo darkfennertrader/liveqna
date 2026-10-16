@@ -6,9 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
-
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ..extraction.models import (
     SlideReconciliation,
@@ -19,21 +17,27 @@ from ..extraction.models import (
 )
 from .base import VisionProviderError
 from .prompt import (
-    PDF_SYSTEM_INSTRUCTIONS,
-    PDF_REVIEW_SYSTEM_INSTRUCTIONS,
+    DOCX_RESOLUTION_SYSTEM_INSTRUCTIONS,
+    DOCX_REVIEW_SYSTEM_INSTRUCTIONS,
+    DOCX_SYSTEM_INSTRUCTIONS,
     PDF_RESOLUTION_SYSTEM_INSTRUCTIONS,
-    SYSTEM_INSTRUCTIONS,
-    page_prompt,
-    page_review_prompt,
-    page_resolution_prompt,
-    REVIEW_SYSTEM_INSTRUCTIONS,
+    PDF_REVIEW_SYSTEM_INSTRUCTIONS,
+    PDF_SYSTEM_INSTRUCTIONS,
     RESOLUTION_SYSTEM_INSTRUCTIONS,
-    review_prompt,
-    resolution_prompt,
-    slide_prompt,
-    XLSX_REVIEW_SYSTEM_INSTRUCTIONS,
+    REVIEW_SYSTEM_INSTRUCTIONS,
+    SYSTEM_INSTRUCTIONS,
     XLSX_RESOLUTION_SYSTEM_INSTRUCTIONS,
+    XLSX_REVIEW_SYSTEM_INSTRUCTIONS,
     XLSX_SYSTEM_INSTRUCTIONS,
+    page_prompt,
+    page_resolution_prompt,
+    page_review_prompt,
+    resolution_prompt,
+    review_prompt,
+    slide_prompt,
+    word_page_prompt,
+    word_page_resolution_prompt,
+    word_page_review_prompt,
     worksheet_prompt,
     worksheet_resolution_prompt,
     worksheet_review_prompt,
@@ -99,6 +103,25 @@ class OllamaVisionProvider:
             result_type=SlideVisionResult,
         )
 
+    def analyze_word_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        prompt_version: str,
+    ) -> SlideVisionResult:
+        del prompt_version
+        return self._analyze(
+            image_path,
+            instructions=DOCX_SYSTEM_INSTRUCTIONS,
+            prompt=word_page_prompt(
+                page_number=page_number,
+                content_profile=content_profile,
+            ),
+            result_type=SlideVisionResult,
+        )
+
     def analyze_worksheet(
         self,
         image_path: Path,
@@ -137,6 +160,33 @@ class OllamaVisionProvider:
             image_path,
             instructions=PDF_REVIEW_SYSTEM_INSTRUCTIONS,
             prompt=page_review_prompt(
+                page_number=page_number,
+                content_profile=content_profile,
+                native_markdown=native_markdown,
+                native_elements=native_elements,
+                vision=vision,
+                reconciliation=reconciliation,
+            ),
+            result_type=SlideReviewResult,
+        )
+
+    def review_word_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        native_elements: list[dict[str, Any]],
+        vision: SlideVisionResult,
+        reconciliation: SlideReconciliation,
+        prompt_version: str,
+    ) -> SlideReviewResult:
+        del prompt_version
+        return self._analyze(
+            image_path,
+            instructions=DOCX_REVIEW_SYSTEM_INSTRUCTIONS,
+            prompt=word_page_review_prompt(
                 page_number=page_number,
                 content_profile=content_profile,
                 native_markdown=native_markdown,
@@ -250,6 +300,35 @@ class OllamaVisionProvider:
             image_path,
             instructions=PDF_RESOLUTION_SYSTEM_INSTRUCTIONS,
             prompt=page_resolution_prompt(
+                page_number=page_number,
+                content_profile=content_profile,
+                native_markdown=native_markdown,
+                current_markdown=current_markdown,
+                finding=finding,
+                question=question,
+                answer=answer,
+            ),
+            result_type=SlideResolutionResult,
+        )
+
+    def resolve_word_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult:
+        del prompt_version
+        return self._analyze(
+            image_path,
+            instructions=DOCX_RESOLUTION_SYSTEM_INSTRUCTIONS,
+            prompt=word_page_resolution_prompt(
                 page_number=page_number,
                 content_profile=content_profile,
                 native_markdown=native_markdown,

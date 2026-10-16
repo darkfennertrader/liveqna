@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from itertools import pairwise
 
 from scipy.optimize import linear_sum_assignment
 
@@ -20,7 +21,6 @@ from .models import (
     SlideVisualElement,
     WorksheetNativeElement,
 )
-
 
 RECONCILIATION_VERSION = "element-fusion-v3"
 _TOKEN = re.compile(r"[\w]+", re.UNICODE)
@@ -75,6 +75,23 @@ def reconcile_page(
         supplementary_markdown=None,
         vision=vision,
         version="pdf-element-fusion-v1",
+    )
+
+
+def reconcile_word_page(
+    *,
+    native_markdown: str,
+    native_elements: list[PageNativeElement],
+    vision: SlideVisionResult,
+) -> SlideReconciliation:
+    """Reconcile authoritative OOXML with one rendered Word page."""
+
+    return _reconcile_elements(
+        native_markdown=native_markdown,
+        native_elements=native_elements,
+        supplementary_markdown=None,
+        vision=vision,
+        version="docx-element-fusion-v1",
     )
 
 
@@ -481,8 +498,8 @@ def _text_similarity(left: str, right: str) -> float:
     left_tokens = _tokens(left_normalized)
     right_tokens = _tokens(right_normalized)
     token_f1 = _counter_f1(Counter(left_tokens), Counter(right_tokens))
-    left_bigrams = Counter(zip(left_tokens, left_tokens[1:]))
-    right_bigrams = Counter(zip(right_tokens, right_tokens[1:]))
+    left_bigrams = Counter(pairwise(left_tokens))
+    right_bigrams = Counter(pairwise(right_tokens))
     bigram_f1 = _counter_f1(left_bigrams, right_bigrams)
     token_coverage = _counter_coverage(Counter(left_tokens), Counter(right_tokens))
     bigram_coverage = _counter_coverage(left_bigrams, right_bigrams)

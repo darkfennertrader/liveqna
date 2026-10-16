@@ -28,10 +28,29 @@ class Settings:
     database_pool_max_size: int
     dependency_timeout_seconds: float
     approved_by: str
+    text_max_bytes: int
+    text_max_lines: int
+    text_max_line_characters: int
+    text_max_blocks: int
+    text_max_block_characters: int
     pdf_render_dpi: int
     pdf_vision_prompt_version: str
     pdf_review_prompt_version: str
     pdf_resolver_prompt_version: str
+    docx_soffice_binary: str
+    docx_render_dpi: int
+    docx_render_timeout_seconds: float
+    docx_vision_prompt_version: str
+    docx_review_prompt_version: str
+    docx_resolver_prompt_version: str
+    docx_revision_policy: str
+    docx_max_package_entries: int
+    docx_max_compressed_bytes: int
+    docx_max_uncompressed_bytes: int
+    docx_max_compression_ratio: float
+    docx_max_paragraphs: int
+    docx_max_tables: int
+    docx_max_pages: int
     pptx_soffice_binary: str
     pptx_pdftoppm_binary: str
     pptx_render_dpi: int
@@ -80,7 +99,7 @@ class Settings:
     ollama_base_url: str
 
     @classmethod
-    def from_environment(cls) -> "Settings":
+    def from_environment(cls) -> Settings:
         vision_provider = os.environ.get(
             "INGESTION_VISION_PROVIDER", "openai"
         ).strip().lower()
@@ -175,6 +194,25 @@ class Settings:
                 "INGESTION_APPROVED_BY", "local-owner"
             ).strip()
             or "local-owner",
+            text_max_bytes=int(
+                os.environ.get("INGESTION_TEXT_MAX_BYTES", "33554432")
+            ),
+            text_max_lines=int(
+                os.environ.get("INGESTION_TEXT_MAX_LINES", "500000")
+            ),
+            text_max_line_characters=int(
+                os.environ.get(
+                    "INGESTION_TEXT_MAX_LINE_CHARACTERS", "200000"
+                )
+            ),
+            text_max_blocks=int(
+                os.environ.get("INGESTION_TEXT_MAX_BLOCKS", "100000")
+            ),
+            text_max_block_characters=int(
+                os.environ.get(
+                    "INGESTION_TEXT_MAX_BLOCK_CHARACTERS", "2097152"
+                )
+            ),
             pdf_render_dpi=int(
                 os.environ.get("INGESTION_PDF_RENDER_DPI", "144")
             ),
@@ -191,6 +229,57 @@ class Settings:
                 "pdf-human-resolution-v1",
             ).strip()
             or "pdf-human-resolution-v1",
+            docx_soffice_binary=os.environ.get(
+                "INGESTION_DOCX_SOFFICE_BINARY", "soffice"
+            ).strip()
+            or "soffice",
+            docx_render_dpi=int(
+                os.environ.get("INGESTION_DOCX_RENDER_DPI", "144")
+            ),
+            docx_render_timeout_seconds=float(
+                os.environ.get("INGESTION_DOCX_RENDER_TIMEOUT_SECONDS", "180")
+            ),
+            docx_vision_prompt_version=os.environ.get(
+                "INGESTION_DOCX_VISION_PROMPT_VERSION", "docx-page-v1"
+            ).strip()
+            or "docx-page-v1",
+            docx_review_prompt_version=os.environ.get(
+                "INGESTION_DOCX_JUDGE_PROMPT_VERSION", "docx-page-review-v1"
+            ).strip()
+            or "docx-page-review-v1",
+            docx_resolver_prompt_version=os.environ.get(
+                "INGESTION_DOCX_RESOLVER_PROMPT_VERSION",
+                "docx-human-resolution-v1",
+            ).strip()
+            or "docx-human-resolution-v1",
+            docx_revision_policy=os.environ.get(
+                "INGESTION_DOCX_REVISION_POLICY", "final"
+            ).strip().lower(),
+            docx_max_package_entries=int(
+                os.environ.get("INGESTION_DOCX_MAX_PACKAGE_ENTRIES", "20000")
+            ),
+            docx_max_compressed_bytes=int(
+                os.environ.get(
+                    "INGESTION_DOCX_MAX_COMPRESSED_BYTES", "134217728"
+                )
+            ),
+            docx_max_uncompressed_bytes=int(
+                os.environ.get(
+                    "INGESTION_DOCX_MAX_UNCOMPRESSED_BYTES", "536870912"
+                )
+            ),
+            docx_max_compression_ratio=float(
+                os.environ.get("INGESTION_DOCX_MAX_COMPRESSION_RATIO", "100")
+            ),
+            docx_max_paragraphs=int(
+                os.environ.get("INGESTION_DOCX_MAX_PARAGRAPHS", "200000")
+            ),
+            docx_max_tables=int(
+                os.environ.get("INGESTION_DOCX_MAX_TABLES", "20000")
+            ),
+            docx_max_pages=int(
+                os.environ.get("INGESTION_DOCX_MAX_PAGES", "500")
+            ),
             pptx_soffice_binary=os.environ.get(
                 "INGESTION_PPTX_SOFFICE_BINARY", "soffice"
             ).strip()
@@ -329,8 +418,47 @@ class Settings:
                 "OLLAMA_BASE_URL", "http://host.docker.internal:11434"
             ).rstrip("/"),
         )
+        for name, value in (
+            ("INGESTION_TEXT_MAX_BYTES", settings.text_max_bytes),
+            ("INGESTION_TEXT_MAX_LINES", settings.text_max_lines),
+            (
+                "INGESTION_TEXT_MAX_LINE_CHARACTERS",
+                settings.text_max_line_characters,
+            ),
+            ("INGESTION_TEXT_MAX_BLOCKS", settings.text_max_blocks),
+            (
+                "INGESTION_TEXT_MAX_BLOCK_CHARACTERS",
+                settings.text_max_block_characters,
+            ),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
         if settings.pdf_render_dpi <= 0:
             raise ValueError("INGESTION_PDF_RENDER_DPI must be positive")
+        if settings.docx_render_dpi <= 0:
+            raise ValueError("INGESTION_DOCX_RENDER_DPI must be positive")
+        if settings.docx_render_timeout_seconds <= 0:
+            raise ValueError(
+                "INGESTION_DOCX_RENDER_TIMEOUT_SECONDS must be positive"
+            )
+        if settings.docx_revision_policy not in {"final", "original"}:
+            raise ValueError(
+                "INGESTION_DOCX_REVISION_POLICY must be final or original"
+            )
+        for name, value in (
+            ("INGESTION_DOCX_MAX_PACKAGE_ENTRIES", settings.docx_max_package_entries),
+            ("INGESTION_DOCX_MAX_COMPRESSED_BYTES", settings.docx_max_compressed_bytes),
+            ("INGESTION_DOCX_MAX_UNCOMPRESSED_BYTES", settings.docx_max_uncompressed_bytes),
+            ("INGESTION_DOCX_MAX_PARAGRAPHS", settings.docx_max_paragraphs),
+            ("INGESTION_DOCX_MAX_TABLES", settings.docx_max_tables),
+            ("INGESTION_DOCX_MAX_PAGES", settings.docx_max_pages),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if settings.docx_max_compression_ratio <= 0:
+            raise ValueError(
+                "INGESTION_DOCX_MAX_COMPRESSION_RATIO must be positive"
+            )
         if settings.pptx_render_dpi <= 0:
             raise ValueError("INGESTION_PPTX_RENDER_DPI must be positive")
         if settings.xlsx_render_dpi <= 0:

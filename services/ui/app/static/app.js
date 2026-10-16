@@ -980,8 +980,8 @@ function renderIngestionVersion(documentRecord, version, versionCount, showDocum
   const processing = (detail?.version?.processing_status || version.processing_status).toLowerCase();
   const lifecycle = (detail?.version?.status || version.status).toLowerCase();
   const active = processing === "queued" || processing === "running";
-  const isReviewableDocument = ["pptx", "pdf"].includes(extraction?.source_format)
-    || /\.(pptx|pdf)$/i.test(documentRecord.title);
+  const isReviewableDocument = ["pptx", "pdf", "docx"].includes(extraction?.source_format)
+    || /\.(pptx|pdf|docx)$/i.test(documentRecord.title);
   const reviewRequired = processing === "needs_review";
   const passed = processing === "ready";
   const card = document.createElement("div");

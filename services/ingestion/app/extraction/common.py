@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from .errors import ExtractionFailure
 from .models import (
@@ -11,7 +12,6 @@ from .models import (
     NormalizedDocument,
     SourceLocator,
 )
-
 
 WHITESPACE = re.compile(r" {2,}")
 
@@ -35,6 +35,9 @@ class DocumentBuilder:
         text: str,
         source: SourceLocator,
         level: int = 1,
+        *,
+        retrieval_eligible: bool = True,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         cleaned = clean_text(text)
         if not cleaned:
@@ -42,7 +45,13 @@ class DocumentBuilder:
         safe_level = min(max(level, 1), 6)
         self.section_path = self.section_path[: safe_level - 1]
         self.section_path.append(cleaned)
-        self.add("heading", cleaned, source)
+        self.add(
+            "heading",
+            cleaned,
+            source,
+            retrieval_eligible=retrieval_eligible,
+            attributes=attributes,
+        )
 
     def add(
         self,
@@ -50,9 +59,13 @@ class DocumentBuilder:
         text: str,
         source: SourceLocator,
         section_path: list[str] | None = None,
+        *,
+        retrieval_eligible: bool = True,
+        attributes: dict[str, Any] | None = None,
+        preserve_whitespace: bool = False,
     ) -> None:
-        cleaned = clean_text(text)
-        if not cleaned:
+        cleaned = text.strip("\n") if preserve_whitespace else clean_text(text)
+        if not cleaned.strip():
             return
         self.blocks.append(
             NormalizedBlock(
@@ -63,6 +76,8 @@ class DocumentBuilder:
                     self.section_path if section_path is None else section_path
                 ),
                 source=source,
+                retrieval_eligible=retrieval_eligible,
+                attributes=attributes or {},
             )
         )
 

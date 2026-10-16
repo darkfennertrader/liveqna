@@ -255,8 +255,8 @@ For example, a document can remain `DRAFT` while its ingestion run is `FAILED`.
 - `content_hash`
 - `qdrant_point_id`
 
-`source_locator` contains the page, slide, worksheet/range, or transcript
-timestamp needed to trace a result to its source.
+`source_locator` contains the page, slide, worksheet/range, text line range, or
+transcript timestamp needed to trace a result to its source.
 
 ## Document extraction
 
@@ -269,7 +269,13 @@ shows the corresponding page-level evidence, reconciliation, judge, and human
 resolution flow. The [XLSX ingestion pipeline](docs/xlsx-ingestion-pipeline.md)
 shows package validation, authoritative cell/formula extraction, isolated Calc
 recalculation, selective visual evidence, reconciliation, and worksheet-level
-human review. All diagrams stop before chunking and embedding.
+human review. The [DOCX ingestion pipeline](docs/docx-ingestion-pipeline.md)
+shows validated OOXML stories, the isolated Writer render, page alignment,
+reconciliation, and Word-page human review. The
+[TXT and Markdown ingestion pipeline](docs/text-markdown-ingestion-pipeline.md)
+shows strict UTF-8 validation, bounded deterministic parsing, CommonMark
+structure, and line-level provenance. All diagrams stop before chunking and
+embedding.
 
 | Format | Initial extraction strategy |
 | --- | --- |
@@ -277,8 +283,8 @@ human review. All diagrams stop before chunking and embedding.
 | PDF transcript | Native page text plus source-provided video name and overall time range; never infer missing speaker or turn timestamps |
 | PPTX | Hybrid slide extraction: native title/body/notes plus a rendered-slide vision pass producing Markdown, tables, visual descriptions, labels, and quality findings |
 | XLSX | Validated OOXML package; authoritative typed cells, formulas, cached values, tables, named ranges and exact cell locators; isolated LibreOffice recalculation; selective rendered-sheet vision; deterministic reconciliation, independent judge and worksheet-specific human resolution |
-| DOCX | Headings, paragraphs, and tables in source order |
-| TXT/Markdown | Shared UTF-8 paragraph path, with Markdown heading and pipe-table recognition |
+| DOCX | Validated OOXML stories with headings, paragraphs, nested tables, links, content controls, revisions, comments and image evidence; isolated Writer page rendering; deterministic page alignment and reconciliation; independent judge and page-specific human resolution |
+| TXT/Markdown | Strict bounded UTF-8 path; whitespace-preserving TXT paragraphs or CommonMark headings, paragraphs, lists, quotes, non-executable code, valid pipe tables, links, image references and front matter, all with line locators |
 
 ### PDF hybrid and transcript extraction profile
 
@@ -321,9 +327,47 @@ Material findings create worksheet-specific questions in the same human-review
 UI used by PPTX and PDF, and applied answers update the reconciled worksheet
 Markdown stored in `normalized.json`.
 
+### DOCX native, rendered-page, and visual extraction profile
+
+DOCX ingestion validates the OOXML package before opening it. Active content is
+rejected before LibreOffice runs; embedded objects are inventoried and require
+review. Direct WordprocessingML traversal extracts content controls, headings,
+paragraphs, nested and merged tables, hyperlinks, image anchors, headers,
+footers, footnotes, endnotes, comments, tracked revisions, and document
+properties. Comments remain available for audit but are excluded from retrieval
+by default. The configured `final` or `original` revision policy is explicit in
+the normalized metadata.
+
+LibreOffice Writer runs with an isolated profile and exports a separate PDF
+without modifying the immutable source. PyMuPDF renders every page, and native
+Word blocks are deterministically aligned to those pages. Each page then receives
+an independent visual extraction and a second independent judge call. Native
+OOXML remains authoritative for exact facts; visual-only meaning is retained and
+conflicts are quarantined. MEDIUM-or-higher deterministic or judge findings
+create Word-page questions in the common review UI. Applied human resolutions
+update the reconciled page Markdown in `normalized.json`.
+
 OCR is not implemented. A page without native text produces `OCR_REQUIRED`,
 preserves partial output, becomes `NEEDS_REVIEW`, and blocks approval. The future
 OCR boundary is shown explicitly in the PDF pipeline diagram.
+
+### TXT and Markdown deterministic extraction profile
+
+TXT and Markdown share strict UTF-8 validation, configurable resource limits,
+line-ending normalization, stable block IDs, and one-based source-line
+locators. Invalid encoding, NUL bytes, empty input, oversized content,
+pathological lines, excessive blocks, and oversized blocks fail with stable
+error codes rather than producing partial normalized output.
+
+Plain TXT preserves whitespace inside paragraphs. Only a registered transcript
+profile activates deterministic timestamp and Unicode speaker parsing; missing
+metadata is never inferred. Markdown is parsed as a CommonMark token stream,
+so Setext and ATX headings, lists, blockquotes, fenced or indented code, and
+valid pipe tables remain distinct instead of being guessed with regular
+expressions. Links and image references are auditable block attributes. Front
+matter is retained but excluded from retrieval, code is non-executable, and
+referenced images are not fetched or visually interpreted. No LLM or human
+review is needed for this deterministic path.
 
 ### PPTX hybrid extraction profile
 

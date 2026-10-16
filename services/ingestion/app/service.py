@@ -11,23 +11,36 @@ from fastapi import UploadFile
 
 from .errors import RegistryConflictError, RegistryNotFoundError
 from .extraction import ExtractionPipeline, NormalizedDocument
-from .extraction.models import SlideHumanResolution
-from .extraction.pdf_report import build_pdf_llm_report
-from .extraction.xlsx_report import build_xlsx_review_report
-from .extraction.pdf_resolution import (
-    find_review_question as find_pdf_review_question,
-    review_questions as pdf_review_questions,
+from .extraction.docx_report import build_docx_review_report
+from .extraction.docx_resolution import (
+    find_review_question as find_docx_review_question,
 )
-from .extraction.pptx_resolution import (
-    find_review_question as find_pptx_review_question,
-    review_questions as pptx_review_questions,
-)
-from .extraction.xlsx_resolution import (
-    find_review_question as find_xlsx_review_question,
-    review_questions as xlsx_review_questions,
+from .extraction.docx_resolution import (
+    review_questions as docx_review_questions,
 )
 from .extraction.errors import ExtractionFailure
+from .extraction.models import SlideHumanResolution
+from .extraction.pdf_report import build_pdf_llm_report
+from .extraction.pdf_resolution import (
+    find_review_question as find_pdf_review_question,
+)
+from .extraction.pdf_resolution import (
+    review_questions as pdf_review_questions,
+)
 from .extraction.pptx_report import build_pptx_llm_report
+from .extraction.pptx_resolution import (
+    find_review_question as find_pptx_review_question,
+)
+from .extraction.pptx_resolution import (
+    review_questions as pptx_review_questions,
+)
+from .extraction.xlsx_report import build_xlsx_review_report
+from .extraction.xlsx_resolution import (
+    find_review_question as find_xlsx_review_question,
+)
+from .extraction.xlsx_resolution import (
+    review_questions as xlsx_review_questions,
+)
 from .qdrant import QdrantProbe
 from .repository import RegistryRepository
 from .schemas import (
@@ -40,7 +53,6 @@ from .schemas import (
 from .storage import VersionStorage
 from .vision.base import SlideResolutionProvider, VisionProviderError
 
-
 logger = logging.getLogger("ingestion.service")
 
 
@@ -49,6 +61,7 @@ REVIEW_REQUIRED_CODES = {
     "PDF_REVIEW_REQUIRED",
     "PPTX_REVIEW_REQUIRED",
     "XLSX_REVIEW_REQUIRED",
+    "DOCX_REVIEW_REQUIRED",
 }
 
 
@@ -62,6 +75,7 @@ class RegistryService:
         resolution_provider: SlideResolutionProvider,
         resolution_prompt_version: str,
         pdf_resolution_prompt_version: str,
+        docx_resolution_prompt_version: str,
         xlsx_resolution_prompt_version: str,
         qdrant: QdrantProbe,
         qdrant_collection: str,
@@ -73,6 +87,7 @@ class RegistryService:
         self._resolution_provider = resolution_provider
         self._resolution_prompt_version = resolution_prompt_version
         self._pdf_resolution_prompt_version = pdf_resolution_prompt_version
+        self._docx_resolution_prompt_version = docx_resolution_prompt_version
         self._xlsx_resolution_prompt_version = xlsx_resolution_prompt_version
         self._qdrant = qdrant
         self._qdrant_collection = qdrant_collection
@@ -208,6 +223,13 @@ class RegistryService:
                 raise RegistryConflictError(
                     "the XLSX review report is not available yet"
                 ) from exc
+        if document.source_format == "docx" and document.pages:
+            try:
+                return self._storage.read_docx_review_report(version.file_path)
+            except FileNotFoundError as exc:
+                raise RegistryConflictError(
+                    "the DOCX review report is not available yet"
+                ) from exc
         if document.source_format != "pptx":
             warnings = document.quality.warnings or [
                 "No structured inconsistency questions were produced."
@@ -273,7 +295,11 @@ class RegistryService:
                 }
             )
         for page in document.pages:
-            questions = pdf_review_questions(page)
+            questions = (
+                docx_review_questions(page)
+                if document.source_format == "docx"
+                else pdf_review_questions(page)
+            )
             if not questions:
                 continue
             total += len(questions)
@@ -289,7 +315,7 @@ class RegistryService:
                     for element in page.native_elements
                     if element.kind == "title" and element.content.strip()
                 ),
-                "PDF page",
+                "Word page" if document.source_format == "docx" else "PDF page",
             )
             groups.append(
                 {
@@ -372,7 +398,11 @@ class RegistryService:
             try:
                 resolver = {
                     "slide": self._resolution_provider.resolve_slide,
-                    "page": self._resolution_provider.resolve_page,
+                    "page": (
+                        self._resolution_provider.resolve_word_page
+                        if document.source_format == "docx"
+                        else self._resolution_provider.resolve_page
+                    ),
                     "worksheet": self._resolution_provider.resolve_worksheet,
                 }[locator_kind]
                 locator_arguments = (
@@ -400,7 +430,11 @@ class RegistryService:
                     answer=cleaned_answer,
                     prompt_version={
                         "slide": self._resolution_prompt_version,
-                        "page": self._pdf_resolution_prompt_version,
+                        "page": (
+                            self._docx_resolution_prompt_version
+                            if document.source_format == "docx"
+                            else self._pdf_resolution_prompt_version
+                        ),
                         "worksheet": self._xlsx_resolution_prompt_version,
                     }[locator_kind],
                 )
@@ -425,7 +459,11 @@ class RegistryService:
                 model=self._resolution_provider.model,
                 prompt_version={
                     "slide": self._resolution_prompt_version,
-                    "page": self._pdf_resolution_prompt_version,
+                    "page": (
+                        self._docx_resolution_prompt_version
+                        if document.source_format == "docx"
+                        else self._pdf_resolution_prompt_version
+                    ),
                     "worksheet": self._xlsx_resolution_prompt_version,
                 }[locator_kind],
                 response_hash=response_hash,
@@ -454,7 +492,7 @@ class RegistryService:
         async with lock:
             version = await self.repository.get_version(version_id)
             document = await self.normalized_document(version_id)
-            locator_kind, item, question = self._locate_question(
+            locator_kind, item, _question = self._locate_question(
                 document, question_id
             )
             current = next(
@@ -519,7 +557,11 @@ class RegistryService:
                 return (
                     "page",
                     page,
-                    find_pdf_review_question(page, question_id),
+                    (
+                        find_docx_review_question(page, question_id)
+                        if document.source_format == "docx"
+                        else find_pdf_review_question(page, question_id)
+                    ),
                 )
             except KeyError:
                 continue
@@ -590,7 +632,11 @@ class RegistryService:
         ] + [
             question
             for page in document.pages
-            for question in pdf_review_questions(page)
+            for question in (
+                docx_review_questions(page)
+                if document.source_format == "docx"
+                else pdf_review_questions(page)
+            )
         ] + [
             question
             for worksheet in document.worksheets
@@ -623,18 +669,23 @@ class RegistryService:
             suffix == ".pdf" and effective_document_type != "transcript"
         )
         is_xlsx = suffix == ".xlsx"
+        is_docx = suffix == ".docx"
         renderer_version = None
         vision_provider = None
         vision_model = None
         vision_prompt_version = None
-        if is_pptx or is_general_pdf or is_xlsx:
+        if is_pptx or is_general_pdf or is_xlsx or is_docx:
             renderer = (
                 self._extraction.pptx_renderer
                 if is_pptx
                 else (
                     self._extraction.pdf_renderer
                     if is_general_pdf
-                    else self._extraction.xlsx_renderer
+                    else (
+                        self._extraction.xlsx_renderer
+                        if is_xlsx
+                        else self._extraction.docx_renderer
+                    )
                 )
             )
             if renderer is not None:
@@ -646,6 +697,7 @@ class RegistryService:
                 "pptx": self._extraction.vision_prompt_version,
                 "pdf": self._extraction.pdf_vision_prompt_version,
                 "xlsx": self._extraction.xlsx_vision_prompt_version,
+                "docx": self._extraction.docx_vision_prompt_version,
             }[suffix.removeprefix(".")]
         run = await self.repository.start_extraction(
             version_id,
@@ -744,6 +796,9 @@ class RegistryService:
         elif normalized.source_format == "xlsx" and normalized.worksheets:
             report = build_xlsx_review_report(normalized)
             self._storage.write_xlsx_review_report(source_path, report)
+        elif normalized.source_format == "docx" and normalized.pages:
+            report = build_docx_review_report(normalized)
+            self._storage.write_docx_review_report(source_path, report)
 
     async def approve_version(self, version_id: UUID) -> DocumentVersionResponse:
         version = await self.repository.get_version(version_id)

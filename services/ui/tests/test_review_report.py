@@ -2,7 +2,6 @@ from pathlib import Path
 
 from app.review_report import render_review_report
 
-
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
 
 
@@ -33,6 +32,13 @@ def test_review_report_routes_local_pdf_page_images() -> None:
         "/api/ingestion/versions/version-pdf/review-artifacts/"
         "pages/page-0002.png"
     ) in rendered
+
+
+def test_ingestion_ui_exposes_docx_review_action() -> None:
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert '["pptx", "pdf", "docx"]' in javascript
+    assert "/\\.(pptx|pdf|docx)$/i" in javascript
 
 
 def test_review_report_routes_local_xlsx_worksheet_images() -> None:

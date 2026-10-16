@@ -14,8 +14,11 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from .database import Database
 from .errors import RegistryConflictError, RegistryNotFoundError
 from .extraction import ExtractionPipeline, NormalizedDocument
+from .extraction.docx_renderer import LibreOfficeDocxRenderer
+from .extraction.docx_validation import DocxPackageLimits
 from .extraction.pdf_renderer import PyMuPdfRenderer
 from .extraction.pptx_renderer import LibreOfficePptxRenderer
+from .extraction.text import TextExtractionLimits
 from .extraction.xlsx_renderer import LibreOfficeXlsxRenderer
 from .extraction.xlsx_validation import XlsxPackageLimits
 from .qdrant import QdrantProbe
@@ -41,7 +44,6 @@ from .vision import (
     create_review_provider,
     create_vision_provider,
 )
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ingestion.main")
@@ -73,6 +75,11 @@ async def lifespan(app: FastAPI):
         settings.approved_by,
         ExtractionPipeline(
             pdf_renderer=PyMuPdfRenderer(dpi=settings.pdf_render_dpi),
+            docx_renderer=LibreOfficeDocxRenderer(
+                soffice_binary=settings.docx_soffice_binary,
+                dpi=settings.docx_render_dpi,
+                timeout_seconds=settings.docx_render_timeout_seconds,
+            ),
             pptx_renderer=LibreOfficePptxRenderer(
                 soffice_binary=settings.pptx_soffice_binary,
                 pdftoppm_binary=settings.pptx_pdftoppm_binary,
@@ -91,6 +98,8 @@ async def lifespan(app: FastAPI):
             review_provider=create_review_provider(settings),
             pdf_vision_prompt_version=settings.pdf_vision_prompt_version,
             pdf_review_prompt_version=settings.pdf_review_prompt_version,
+            docx_vision_prompt_version=settings.docx_vision_prompt_version,
+            docx_review_prompt_version=settings.docx_review_prompt_version,
             vision_prompt_version=settings.vision_prompt_version,
             review_prompt_version=settings.review_prompt_version,
             xlsx_vision_prompt_version=settings.xlsx_vision_prompt_version,
@@ -102,12 +111,30 @@ async def lifespan(app: FastAPI):
                 max_sheets=settings.xlsx_max_sheets,
                 max_cells=settings.xlsx_max_cells,
             ),
+            docx_package_limits=DocxPackageLimits(
+                max_entries=settings.docx_max_package_entries,
+                max_compressed_bytes=settings.docx_max_compressed_bytes,
+                max_uncompressed_bytes=settings.docx_max_uncompressed_bytes,
+                max_compression_ratio=settings.docx_max_compression_ratio,
+                max_paragraphs=settings.docx_max_paragraphs,
+                max_tables=settings.docx_max_tables,
+                max_pages=settings.docx_max_pages,
+            ),
+            text_limits=TextExtractionLimits(
+                max_bytes=settings.text_max_bytes,
+                max_lines=settings.text_max_lines,
+                max_line_characters=settings.text_max_line_characters,
+                max_blocks=settings.text_max_blocks,
+                max_block_characters=settings.text_max_block_characters,
+            ),
+            docx_revision_policy=settings.docx_revision_policy,
             xlsx_visual_mode=settings.xlsx_visual_mode,
             vision_max_concurrency=settings.vision_max_concurrency,
         ),
         create_resolution_provider(settings),
         settings.resolver_prompt_version,
         settings.pdf_resolver_prompt_version,
+        settings.docx_resolver_prompt_version,
         settings.xlsx_resolver_prompt_version,
         qdrant,
         settings.qdrant_collection,

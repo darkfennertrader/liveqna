@@ -4,10 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 BlockKind = Literal[
     "heading",
     "paragraph",
+    "list",
+    "blockquote",
+    "code",
+    "metadata",
     "table",
     "table_header",
     "table_row",
@@ -50,6 +53,11 @@ class SourceLocator(BaseModel):
     line_end: int | None = None
     timestamp: str | None = None
     speaker: str | None = None
+    story: str | None = None
+    part: str | None = None
+    section: int | None = None
+    row: int | None = None
+    column: int | None = None
 
 
 class NormalizedBlock(BaseModel):
@@ -58,6 +66,8 @@ class NormalizedBlock(BaseModel):
     text: str
     section_path: list[str] = Field(default_factory=list)
     source: SourceLocator
+    retrieval_eligible: bool = True
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractionQuality(BaseModel):
@@ -338,6 +348,34 @@ class TranscriptMetadata(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
 
 
+class DocxMetadata(BaseModel):
+    """Package and native WordprocessingML inventory retained for audit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    revision_policy: Literal["final", "original"]
+    story_parts: list[str] = Field(default_factory=list)
+    section_count: int = Field(ge=0)
+    paragraph_count: int = Field(ge=0)
+    table_count: int = Field(ge=0)
+    image_count: int = Field(ge=0)
+    content_control_count: int = Field(ge=0)
+    text_box_count: int = Field(ge=0)
+    comment_count: int = Field(ge=0)
+    footnote_count: int = Field(ge=0)
+    endnote_count: int = Field(ge=0)
+    inserted_revision_count: int = Field(ge=0)
+    deleted_revision_count: int = Field(ge=0)
+    external_links: list[str] = Field(default_factory=list)
+    embedded_objects: list[str] = Field(default_factory=list)
+    core_properties: dict[str, Any] = Field(default_factory=dict)
+    custom_properties: dict[str, Any] = Field(default_factory=dict)
+    package_entry_count: int = Field(ge=0)
+    package_compressed_bytes: int = Field(ge=0)
+    package_uncompressed_bytes: int = Field(ge=0)
+    package_compression_ratio: float = Field(ge=0)
+
+
 class NormalizedPage(BaseModel):
     page_number: int = Field(ge=1)
     native_block_ids: list[str] = Field(default_factory=list)
@@ -483,8 +521,8 @@ class NormalizedWorksheet(BaseModel):
 
 class NormalizedDocument(BaseModel):
     schema_version: Literal[
-        "1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"
-    ] = "1.7"
+        "1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"
+    ] = "1.8"
     source_filename: str
     source_format: str
     content_hash: str
@@ -493,6 +531,7 @@ class NormalizedDocument(BaseModel):
     slides: list[NormalizedSlide] = Field(default_factory=list)
     worksheets: list[NormalizedWorksheet] = Field(default_factory=list)
     workbook_metadata: WorkbookMetadata | None = None
+    docx_metadata: DocxMetadata | None = None
     transcript_metadata: TranscriptMetadata | None = None
     content_profile: str | None = None
     retrieval_metadata: dict[str, Any] = Field(default_factory=dict)

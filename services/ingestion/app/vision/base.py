@@ -41,6 +41,15 @@ class VisionProvider(Protocol):
         prompt_version: str,
     ) -> SlideVisionResult: ...
 
+    def analyze_word_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        prompt_version: str,
+    ) -> SlideVisionResult: ...
+
     def analyze_worksheet(
         self,
         image_path: Path,
@@ -71,6 +80,19 @@ class SlideReviewProvider(Protocol):
     ) -> SlideReviewResult: ...
 
     def review_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        native_elements: list[dict[str, Any]],
+        vision: SlideVisionResult,
+        reconciliation: SlideReconciliation,
+        prompt_version: str,
+    ) -> SlideReviewResult: ...
+
+    def review_word_page(
         self,
         image_path: Path,
         *,
@@ -118,6 +140,20 @@ class SlideResolutionProvider(Protocol):
     ) -> SlideResolutionResult: ...
 
     def resolve_page(
+        self,
+        image_path: Path,
+        *,
+        page_number: int,
+        content_profile: str,
+        native_markdown: str,
+        current_markdown: str,
+        finding: SlideReviewDecisionFinding,
+        question: str,
+        answer: str,
+        prompt_version: str,
+    ) -> SlideResolutionResult: ...
+
+    def resolve_word_page(
         self,
         image_path: Path,
         *,

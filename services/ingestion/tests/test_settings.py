@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from app.settings import Settings
 
 
@@ -33,6 +32,11 @@ def test_settings_read_ingestion_environment(monkeypatch, tmp_path: Path) -> Non
     assert settings.qdrant_url == "http://qdrant:6333"
     assert settings.qdrant_collection == "liveqna_chunks"
     assert settings.approved_by == "document owner"
+    assert settings.text_max_bytes == 33_554_432
+    assert settings.text_max_lines == 500_000
+    assert settings.text_max_line_characters == 200_000
+    assert settings.text_max_blocks == 100_000
+    assert settings.text_max_block_characters == 2_097_152
     assert settings.vision_provider == "openai"
     assert settings.vision_model == "configurable-vision-model"
     assert settings.vision_temperature == 0.1
@@ -50,6 +54,13 @@ def test_settings_read_ingestion_environment(monkeypatch, tmp_path: Path) -> Non
     assert settings.pdf_vision_prompt_version == "pdf-page-v2"
     assert settings.pdf_review_prompt_version == "pdf-page-review-v1"
     assert settings.pdf_resolver_prompt_version == "pdf-human-resolution-v1"
+    assert settings.docx_soffice_binary == "soffice"
+    assert settings.docx_render_dpi == 144
+    assert settings.docx_vision_prompt_version == "docx-page-v1"
+    assert settings.docx_review_prompt_version == "docx-page-review-v1"
+    assert settings.docx_resolver_prompt_version == "docx-human-resolution-v1"
+    assert settings.docx_revision_policy == "final"
+    assert settings.docx_max_pages == 500
     assert settings.xlsx_visual_mode == "selective"
     assert settings.xlsx_vision_prompt_version == "xlsx-worksheet-v1"
     assert settings.xlsx_review_prompt_version == "xlsx-worksheet-review-v1"
@@ -129,5 +140,35 @@ def test_temperature_must_be_between_zero_and_two(monkeypatch) -> None:
     with pytest.raises(
         ValueError,
         match="INGESTION_VISION_TEMPERATURE must be between 0 and 2",
+    ):
+        Settings.from_environment()
+
+
+def test_docx_revision_policy_is_validated(monkeypatch) -> None:
+    monkeypatch.setenv("INGESTION_VISION_PROVIDER", "openai")
+    monkeypatch.setenv("INGESTION_VISION_MODEL", "vision-model")
+    monkeypatch.setenv("INGESTION_JUDGE_PROVIDER", "openai")
+    monkeypatch.setenv("INGESTION_JUDGE_MODEL", "judge-model")
+    monkeypatch.setenv("INGESTION_RESOLVER_PROVIDER", "openai")
+    monkeypatch.setenv("INGESTION_RESOLVER_MODEL", "resolver-model")
+    monkeypatch.setenv("INGESTION_DOCX_REVISION_POLICY", "accept_everything")
+
+    with pytest.raises(
+        ValueError,
+        match="INGESTION_DOCX_REVISION_POLICY must be final or original",
+    ):
+        Settings.from_environment()
+
+
+def test_text_limits_must_be_positive(monkeypatch) -> None:
+    monkeypatch.setenv("INGESTION_VISION_MODEL", "vision-model")
+    monkeypatch.setenv("INGESTION_JUDGE_PROVIDER", "openai")
+    monkeypatch.setenv("INGESTION_JUDGE_MODEL", "judge-model")
+    monkeypatch.setenv("INGESTION_RESOLVER_PROVIDER", "openai")
+    monkeypatch.setenv("INGESTION_RESOLVER_MODEL", "resolver-model")
+    monkeypatch.setenv("INGESTION_TEXT_MAX_BLOCKS", "0")
+
+    with pytest.raises(
+        ValueError, match="INGESTION_TEXT_MAX_BLOCKS must be positive"
     ):
         Settings.from_environment()

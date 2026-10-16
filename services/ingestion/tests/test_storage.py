@@ -5,9 +5,8 @@ from io import BytesIO
 from uuid import uuid4
 
 import pytest
-from fastapi import UploadFile
-
 from app.storage import VersionStorage
+from fastapi import UploadFile
 
 
 @pytest.mark.asyncio
@@ -50,6 +49,13 @@ async def test_version_storage_uses_stable_ids_and_hashes_content(tmp_path) -> N
     assert pdf_report_path.endswith("/PDF-LLM-PAGE-REPORT.md")
     assert storage.read_pdf_llm_report(stored.relative_path) == (
         "# PDF LLM page report\n"
+    )
+    docx_report_path = storage.write_docx_review_report(
+        stored.relative_path, "# DOCX Word-page review report\n"
+    )
+    assert docx_report_path.endswith("/DOCX-WORD-PAGE-REVIEW-REPORT.md")
+    assert storage.read_docx_review_report(stored.relative_path) == (
+        "# DOCX Word-page review report\n"
     )
     xlsx_report_path = storage.write_xlsx_review_report(
         stored.relative_path, "# XLSX worksheet review report\n"

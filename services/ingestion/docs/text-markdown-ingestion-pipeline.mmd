@@ -1,0 +1,32 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#eef4ff","primaryTextColor":"#101828","primaryBorderColor":"#175cd3","lineColor":"#475467","secondaryColor":"#fffaeb","tertiaryColor":"#ecfdf3","fontFamily":"Arial"},"flowchart":{"curve":"basis","nodeSpacing":48,"rankSpacing":68,"htmlLabels":true}}}%%
+flowchart TB
+    A["<b>Upload TXT, MD or MARKDOWN</b><br/>What: store immutable source and SHA-256 hash<br/>Component: ingestion registry<br/>Scripts: app/service.py and app/storage.py"]
+    B["<b>Validate text input</b><br/>What: enforce suffix, byte and line limits; reject invalid UTF-8, NUL bytes and empty files<br/>Component: bounded strict UTF-8 decoder<br/>Script: app/extraction/text.py"]
+    C{"<b>Select deterministic parser</b><br/>What: route by the source extension<br/>Component: extraction pipeline<br/>Script: app/extraction/pipeline.py"}
+
+    A -->|"source.txt, source.md or source.markdown"| B
+    B -->|"validated UTF-8 text"| C
+
+    C -->|"TXT"| D["<b>Plain-text extraction</b><br/>What: preserve paragraphs, line layout and exact line ranges<br/>Component: bounded line parser<br/>Script: app/extraction/text.py"]
+    C -->|"MD or MARKDOWN"| E["<b>CommonMark extraction</b><br/>What: parse headings, paragraphs, lists, quotes, code, valid pipe tables, links, images and front matter<br/>Component: markdown-it-py token stream with line maps<br/>Script: app/extraction/text.py"]
+
+    D -->|"paragraph or transcript-turn blocks"| F["<b>Optional transcript mapping</b><br/>What: when the registered profile is transcript, retain supplied timestamps and Unicode speaker names<br/>Component: deterministic turn parser<br/>Script: app/extraction/text.py"]
+    E -->|"structured Markdown blocks"| G["<b>Reference audit</b><br/>What: retain link and image targets; mark image content as not visually interpreted<br/>Component: token attributes and quality warning<br/>Script: app/extraction/text.py"]
+
+    F -->|"normalized blocks plus line locators"| H["<b>Common normalization</b><br/>What: assign stable block IDs, section paths, retrieval eligibility, quality and provenance<br/>Component: Pydantic normalized schema<br/>Scripts: app/extraction/common.py and app/extraction/models.py"]
+    G -->|"normalized blocks plus line locators"| H
+
+    H -->|"normalized.json"| I["<b>End of this phase</b><br/>No chunking, embedding, Qdrant indexing or LLM calls"]
+
+    B -.->|"invalid or over a configured limit"| X["<b>Fail closed</b><br/>What: return a stable extraction error without partial normalized output<br/>Component: extraction failure contract<br/>Scripts: app/extraction/errors.py and app/service.py"]
+
+    classDef source fill:#eef4ff,stroke:#175cd3,stroke-width:2px,color:#101828;
+    classDef parse fill:#ecfdf3,stroke:#039855,stroke-width:2px,color:#101828;
+    classDef audit fill:#fffaeb,stroke:#dc6803,stroke-width:2px,color:#101828;
+    classDef output fill:#f4f3ff,stroke:#6938ef,stroke-width:2px,color:#101828;
+    classDef reject fill:#fef3f2,stroke:#d92d20,stroke-width:2px,color:#101828;
+    class A,B,C source;
+    class D,E,F,H parse;
+    class G audit;
+    class I output;
+    class X reject;

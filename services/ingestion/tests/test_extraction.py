@@ -6,6 +6,36 @@ import shutil
 from pathlib import Path
 
 import pytest
+from app.extraction.docx_renderer import DocxRenderResult, LibreOfficeDocxRenderer
+from app.extraction.docx_report import build_docx_review_report
+from app.extraction.errors import ExtractionFailure
+from app.extraction.models import (
+    SlideBoundingBox,
+    SlideDiscrepancy,
+    SlideReviewFinding,
+    SlideReviewResult,
+    SlideVisionResult,
+    SlideVisualElement,
+)
+from app.extraction.pdf_renderer import (
+    PyMuPdfRenderer,
+    RenderedPage,
+)
+from app.extraction.pdf_report import build_pdf_llm_report
+from app.extraction.pipeline import ExtractionPipeline
+from app.extraction.pptx_renderer import (
+    LibreOfficePptxRenderer,
+    RenderedSlide,
+)
+from app.extraction.pptx_report import (
+    build_pptx_llm_report,
+    build_pptx_review_report,
+)
+from app.extraction.xlsx_renderer import (
+    RenderedWorksheet,
+    XlsxRenderResult,
+)
+from app.extraction.xlsx_report import build_xlsx_review_report
 from docx import Document
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -14,36 +44,6 @@ from pptx import Presentation
 from pptx.util import Inches
 from pypdf import PdfWriter
 from reportlab.pdfgen import canvas
-
-from app.extraction.errors import ExtractionFailure
-from app.extraction.models import (
-    SlideBoundingBox,
-    SlideDiscrepancy,
-    SlideVisionResult,
-    SlideVisualElement,
-    SlideReviewFinding,
-    SlideReviewResult,
-)
-from app.extraction.pipeline import ExtractionPipeline
-from app.extraction.pptx_report import (
-    build_pptx_llm_report,
-    build_pptx_review_report,
-)
-from app.extraction.pdf_renderer import (
-    PyMuPdfRenderer,
-    RenderedPage,
-)
-from app.extraction.pdf_report import build_pdf_llm_report
-from app.extraction.xlsx_report import build_xlsx_review_report
-from app.extraction.pptx_renderer import (
-    LibreOfficePptxRenderer,
-    RenderedSlide,
-)
-from app.extraction.xlsx_renderer import (
-    RenderedWorksheet,
-    XlsxRenderResult,
-)
-
 
 PIPELINE = ExtractionPipeline()
 
@@ -91,6 +91,45 @@ class FakePdfRenderer:
                 )
             )
         return rendered
+
+
+class FakeDocxRenderer:
+    version = "fake-docx-renderer-v1"
+
+    def render(self, source: Path, *, max_pages: int) -> DocxRenderResult:
+        pages_directory = source.parent / "pages"
+        rendered_directory = source.parent / "rendered"
+        pages_directory.mkdir(exist_ok=True)
+        rendered_directory.mkdir(exist_ok=True)
+        pdf_path = rendered_directory / "document.pdf"
+        word_document = Document(source)
+        pdf = canvas.Canvas(str(pdf_path))
+        y = 760
+        for paragraph in word_document.paragraphs:
+            if paragraph.text.strip():
+                pdf.drawString(72, y, paragraph.text[:100])
+                y -= 20
+        for table in word_document.tables:
+            for row in table.rows:
+                pdf.drawString(
+                    72, y, " ".join(cell.text for cell in row.cells)[:100]
+                )
+                y -= 20
+        pdf.save()
+        assert max_pages >= 1
+        image_path = pages_directory / "page-0001.png"
+        image_path.write_bytes(b"fake-docx-page-1")
+        return DocxRenderResult(
+            pdf_path=pdf_path,
+            pages=[
+                RenderedPage(
+                    page_number=1,
+                    path=image_path,
+                    relative_path="pages/page-0001.png",
+                    content_hash=digest(image_path),
+                )
+            ],
+        )
 
 
 class FakeXlsxRenderer:
@@ -155,6 +194,10 @@ class FakeVisionProvider:
         assert image_path.is_file()
         return self._result()
 
+    def analyze_word_page(self, image_path: Path, **kwargs) -> SlideVisionResult:
+        assert image_path.is_file()
+        return self._result()
+
     def review_slide(self, image_path: Path, **kwargs) -> SlideReviewResult:
         assert image_path.is_file()
         return SlideReviewResult(
@@ -172,6 +215,9 @@ class FakeVisionProvider:
         return self.review_slide(image_path, **kwargs)
 
     def review_worksheet(self, image_path: Path, **kwargs) -> SlideReviewResult:
+        return self.review_slide(image_path, **kwargs)
+
+    def review_word_page(self, image_path: Path, **kwargs) -> SlideReviewResult:
         return self.review_slide(image_path, **kwargs)
 
     def _result(self) -> SlideVisionResult:
@@ -211,6 +257,7 @@ class FakeVisionProvider:
 def hybrid_pipeline(*, material_discrepancy: bool = False) -> ExtractionPipeline:
     return ExtractionPipeline(
         pdf_renderer=FakePdfRenderer(),
+        docx_renderer=FakeDocxRenderer(),
         pptx_renderer=FakeRenderer(),
         xlsx_renderer=FakeXlsxRenderer(),
         vision_provider=FakeVisionProvider(
@@ -293,7 +340,9 @@ def test_docx_extraction_preserves_headings_paragraphs_and_tables(
     table.cell(1, 1).text = "Architecture"
     document.save(path)
 
-    normalized = extract(path)
+    normalized = hybrid_pipeline().extract(
+        path, path.name, "official", digest(path), "general_document"
+    )
 
     assert [block.kind for block in normalized.blocks] == [
         "heading",
@@ -302,7 +351,39 @@ def test_docx_extraction_preserves_headings_paragraphs_and_tables(
     ]
     assert normalized.blocks[0].source.paragraph == 1
     assert normalized.blocks[-1].source.table == 1
-    assert "Component\tOwner" in normalized.blocks[-1].text
+    assert "| Component | Owner |" in normalized.blocks[-1].text
+    assert normalized.schema_version == "1.8"
+    assert normalized.docx_metadata is not None
+    assert normalized.docx_metadata.table_count == 1
+    assert normalized.pages[0].image_path == "pages/page-0001.png"
+    assert normalized.pages[0].review.status == "AUTO_PASS"
+    report = build_docx_review_report(normalized)
+    assert "## Word page 1" in report
+    assert "Authoritative OOXML extraction" in report
+
+
+def test_docx_material_discrepancy_preserves_reviewable_partial_output(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "review.docx"
+    document = Document()
+    document.add_heading("Review required", level=1)
+    document.add_paragraph("Native wording")
+    document.save(path)
+
+    with pytest.raises(ExtractionFailure) as raised:
+        hybrid_pipeline(material_discrepancy=True).extract(
+            path, path.name, "official", digest(path), "general_document"
+        )
+
+    assert raised.value.code == "DOCX_REVIEW_REQUIRED"
+    assert raised.value.partial_document is not None
+    page = raised.value.partial_document.pages[0]
+    assert page.review.status == "REVIEW_REQUIRED"
+    assert page.reconciliation.conflicts == ["A material wording mismatch"]
+    report = build_docx_review_report(raised.value.partial_document)
+    assert "Human resolution questions" in report
+    assert "Which exact fact" in report
 
 
 def test_xlsx_extraction_retains_worksheet_and_cell_ranges(tmp_path: Path) -> None:
@@ -326,7 +407,7 @@ def test_xlsx_extraction_retains_worksheet_and_cell_ranges(tmp_path: Path) -> No
     assert normalized.blocks[1].source.cell_range == "A1:B1"
     assert normalized.quality.status == "WARNING"
     assert normalized.quality.warnings == ["worksheets without values: Empty"]
-    assert normalized.schema_version == "1.7"
+    assert normalized.schema_version == "1.8"
     assert len(normalized.worksheets) == 1
     assert normalized.worksheets[0].review.status == "AUTO_PASS"
     assert normalized.worksheets[0].regions[0].cell_range == "A1:B2"
@@ -416,7 +497,7 @@ def test_pptx_extraction_retains_slide_text_tables_and_notes(
     assert normalized.blocks[2].text.startswith("| Layer | Purpose |")
     assert len(normalized.slides) == 1
     normalized_slide = normalized.slides[0]
-    assert normalized.schema_version == "1.7"
+    assert normalized.schema_version == "1.8"
     assert normalized_slide.image_path == "slides/slide-0001.png"
     assert normalized_slide.vision_provenance.provider == "fake"
     assert normalized_slide.native_elements
@@ -538,6 +619,30 @@ def test_libreoffice_renderer_creates_one_stable_png_per_slide(
     assert [item.content_hash for item in first] == [
         item.content_hash for item in second
     ]
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_LIBREOFFICE_TESTS") != "1"
+    or shutil.which("soffice") is None,
+    reason="set RUN_LIBREOFFICE_TESTS=1 with LibreOffice available",
+)
+def test_libreoffice_docx_renderer_creates_stable_page_pngs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "render.docx"
+    document = Document()
+    document.add_heading("Word rendering", level=1)
+    document.add_paragraph("Stable page evidence.")
+    document.save(path)
+
+    renderer = LibreOfficeDocxRenderer(timeout_seconds=60)
+    first = renderer.render(path, max_pages=10)
+    second = renderer.render(path, max_pages=10)
+
+    assert first.pdf_path.is_file()
+    assert [item.page_number for item in first.pages] == [1]
+    assert first.pages[0].path.is_file()
+    assert first.pages[0].content_hash == second.pages[0].content_hash
 
 
 def test_pdf_extraction_retains_page_numbers(tmp_path: Path) -> None:

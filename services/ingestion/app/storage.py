@@ -12,10 +12,10 @@ from uuid import UUID
 
 from fastapi import UploadFile
 
-from .extraction.pptx_report import PPTX_LLM_REPORT_FILENAME
+from .extraction.docx_report import DOCX_REVIEW_REPORT_FILENAME
 from .extraction.pdf_report import PDF_LLM_REPORT_FILENAME
+from .extraction.pptx_report import PPTX_LLM_REPORT_FILENAME
 from .extraction.xlsx_report import XLSX_LLM_REPORT_FILENAME
-
 
 SAFE_SUFFIX = re.compile(r"^\.[a-z0-9]{1,10}$")
 
@@ -165,6 +165,22 @@ class VersionStorage:
     def read_xlsx_review_report(self, source_path: str) -> str:
         source = self._safe_path(source_path)
         report = source.parent / XLSX_LLM_REPORT_FILENAME
+        return report.read_text(encoding="utf-8")
+
+    def write_docx_review_report(self, source_path: str, report: str) -> str:
+        source = self._safe_path(source_path)
+        destination = source.parent / DOCX_REVIEW_REPORT_FILENAME
+        temporary = source.parent / f".{DOCX_REVIEW_REPORT_FILENAME}.tmp"
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(report)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        return destination.relative_to(self._root).as_posix()
+
+    def read_docx_review_report(self, source_path: str) -> str:
+        source = self._safe_path(source_path)
+        report = source.parent / DOCX_REVIEW_REPORT_FILENAME
         return report.read_text(encoding="utf-8")
 
     def review_artifact(self, source_path: str, artifact_path: str) -> Path:

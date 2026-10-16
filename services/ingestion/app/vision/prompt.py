@@ -12,6 +12,9 @@ PROMPT_VERSION = "pptx-slide-v4"
 PDF_PROMPT_VERSION = "pdf-page-v2"
 PDF_REVIEW_PROMPT_VERSION = "pdf-page-review-v1"
 PDF_RESOLUTION_PROMPT_VERSION = "pdf-human-resolution-v1"
+DOCX_PROMPT_VERSION = "docx-page-v1"
+DOCX_REVIEW_PROMPT_VERSION = "docx-page-review-v1"
+DOCX_RESOLUTION_PROMPT_VERSION = "docx-human-resolution-v1"
 REVIEW_PROMPT_VERSION = "pptx-slide-review-v1"
 RESOLUTION_PROMPT_VERSION = "pptx-human-resolution-v1"
 XLSX_PROMPT_VERSION = "xlsx-worksheet-v1"
@@ -68,6 +71,40 @@ not introduce facts beyond the native evidence, rendered page, current normalize
 Markdown, finding, and human answer. If the answer is insufficient, set
 remaining_uncertainty to true and ask one precise follow-up question. Return only
 the requested structured result."""
+
+
+DOCX_SYSTEM_INSTRUCTIONS = """You extract retrieval evidence from one rendered
+Word-document page. Return only the requested structured result. Treat the page
+image as independent evidence: no OOXML extraction is supplied. Transcribe
+visible wording faithfully, preserve tables as Markdown, describe diagrams,
+charts, images, text boxes, callouts, and layout relationships, and return
+region-level elements in reading order with normalized 0-1000 page coordinates.
+Do not infer wording hidden by clipping, overlap, tracked-change balloons, or
+illegible rendering. Put uncertainty in the uncertainties field instead of
+guessing."""
+
+
+DOCX_REVIEW_SYSTEM_INSTRUCTIONS = """You are the independent second-pass
+reviewer for one rendered Word-document page. Compare the image with the
+supplied authoritative OOXML extraction, first-pass visual extraction, and
+deterministic reconciliation. OOXML text, table cells, links, and revision
+policy are authoritative for exact facts. Visual evidence may add diagram,
+image, layout, and relationship meaning but may never silently replace native
+wording. Report only evidence-supported issues using ATOMIC_FACT_CONFLICT,
+INVENTED_RELATIONSHIP, MISSING_KEY_ELEMENT, PARTIAL_OR_UNCERTAIN, FORMAT_ONLY,
+or NO_DISCREPANCY. Return exactly one NO_DISCREPANCY finding when no issue exists
+and never combine it with another category. Return only the requested structured
+result."""
+
+
+DOCX_RESOLUTION_SYSTEM_INSTRUCTIONS = """You resolve one Word-page review
+finding using an explicit human answer. Return a complete proposed normalized
+Markdown representation of the page. Preserve authoritative OOXML wording,
+numbers, links, table values, and the configured revision view unless the human
+explicitly supplies a correction. Do not introduce facts beyond the evidence and
+human answer. If the answer is insufficient, set remaining_uncertainty to true
+and ask one precise follow-up question. Return only the requested structured
+result."""
 
 
 REVIEW_SYSTEM_INSTRUCTIONS = """You are the independent second-pass reviewer for one
@@ -157,6 +194,15 @@ def page_prompt(*, page_number: int, content_profile: str) -> str:
         f"Business content profile: {content_profile}\n\n"
         "Analyze only the rendered page and produce the structured extraction. "
         "Do not assume access to the PDF object model or hidden metadata."
+    )
+
+
+def word_page_prompt(*, page_number: int, content_profile: str) -> str:
+    return (
+        f"Rendered Word page number: {page_number}\n"
+        f"Business content profile: {content_profile}\n\n"
+        "Analyze only the rendered page and produce the structured extraction. "
+        "Do not assume access to OOXML, comments, revisions, or hidden metadata."
     )
 
 
@@ -276,6 +322,56 @@ def page_resolution_prompt(
         "Resolve only the supplied finding. The human answer is authoritative "
         "for the requested clarification, while native extraction remains "
         "authoritative for unchanged exact source facts.\n\n"
+        + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def word_page_review_prompt(
+    *,
+    page_number: int,
+    content_profile: str,
+    native_markdown: str,
+    native_elements: list[dict],
+    vision: SlideVisionResult,
+    reconciliation: SlideReconciliation,
+) -> str:
+    evidence = {
+        "authoritative_ooxml_markdown": native_markdown,
+        "authoritative_ooxml_elements": native_elements,
+        "first_pass_visual_extraction": vision.model_dump(mode="json"),
+        "deterministic_reconciliation": reconciliation.model_dump(mode="json"),
+    }
+    return (
+        f"Rendered Word page number: {page_number}\n"
+        f"Business content profile: {content_profile}\n\n"
+        "Review the rendered Word page against this evidence bundle. Native "
+        "OOXML remains authoritative for exact source facts.\n\n"
+        + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def word_page_resolution_prompt(
+    *,
+    page_number: int,
+    content_profile: str,
+    native_markdown: str,
+    current_markdown: str,
+    finding: SlideReviewDecisionFinding,
+    question: str,
+    answer: str,
+) -> str:
+    evidence = {
+        "authoritative_ooxml_markdown": native_markdown,
+        "current_normalized_markdown": current_markdown,
+        "review_finding": finding.model_dump(mode="json"),
+        "question": question,
+        "human_answer": answer,
+    }
+    return (
+        f"Rendered Word page number: {page_number}\n"
+        f"Business content profile: {content_profile}\n\n"
+        "Resolve only the supplied finding. The human answer is authoritative "
+        "for the clarification; unchanged OOXML evidence remains authoritative.\n\n"
         + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
     )
 

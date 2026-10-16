@@ -9,6 +9,7 @@ RUN apt-get update \
         fonts-liberation \
         libreoffice-calc \
         libreoffice-impress \
+        libreoffice-writer \
         poppler-utils \
         python3-uno \
     && rm -rf /var/lib/apt/lists/*

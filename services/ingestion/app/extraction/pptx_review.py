@@ -13,7 +13,6 @@ from .models import (
     SlideVisionResult,
 )
 
-
 REVIEW_VERSION = "slide-review-v1"
 SEVERITY_BY_CATEGORY: dict[str, SlideReviewSeverity] = {
     "ATOMIC_FACT_CONFLICT": "CRITICAL",
@@ -74,6 +73,42 @@ def decide_worksheet_review(
         judge_result=judge_result,
         judge_provenance=judge_provenance,
         version="xlsx-worksheet-review-v1",
+    )
+    findings = _deduplicate(
+        [*(deterministic_findings or []), *decision.findings]
+    )
+    severity = max(
+        (finding.severity for finding in findings),
+        key=lambda value: _SEVERITY_RANK[value],
+        default="NONE",
+    )
+    return decision.model_copy(
+        update={
+            "findings": findings,
+            "severity": severity,
+            "status": (
+                "REVIEW_REQUIRED"
+                if _SEVERITY_RANK[severity] >= _SEVERITY_RANK["MEDIUM"]
+                else "AUTO_PASS"
+            ),
+        }
+    )
+
+
+def decide_word_page_review(
+    *,
+    vision: SlideVisionResult,
+    reconciliation: SlideReconciliation,
+    judge_result: SlideReviewResult,
+    judge_provenance: SlideReviewProvenance,
+    deterministic_findings: list[SlideReviewDecisionFinding] | None = None,
+) -> SlideReviewDecision:
+    decision = _decide_review(
+        vision=vision,
+        reconciliation=reconciliation,
+        judge_result=judge_result,
+        judge_provenance=judge_provenance,
+        version="docx-page-review-v1",
     )
     findings = _deduplicate(
         [*(deterministic_findings or []), *decision.findings]
@@ -195,6 +230,16 @@ def failed_worksheet_review(message: str) -> SlideReviewDecision:
     finding = _system_finding(message)
     return SlideReviewDecision(
         version="xlsx-worksheet-review-v1",
+        status="REVIEW_REQUIRED",
+        severity=finding.severity,
+        findings=[finding],
+    )
+
+
+def failed_word_page_review(message: str) -> SlideReviewDecision:
+    finding = _system_finding(message)
+    return SlideReviewDecision(
+        version="docx-page-review-v1",
         status="REVIEW_REQUIRED",
         severity=finding.severity,
         findings=[finding],
